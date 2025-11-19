@@ -19,14 +19,7 @@ __author__ = "Leonard Hackel - BIFOLD/RSiM TU Berlin"
 
 
 class BigEarthNetv2_0_ImageClassifier(pl.LightningModule, PyTorchModelHubMixin):
-    """
-    Wrapper around a pytorch module, allowing this module to be used in automatic
-    training with pytorch lightning.
-    Among other things, the wrapper allows us to do automatic training and removes the
-    need to manage data on different devices (e.g. GPU and CPU).
-    Also uses the PyTorchModelHubMixin to allow for easy saving and loading of the model to the Huggingface Hub.
-    """
-
+    
     def __init__(
             self,
             config: ILMConfiguration,
