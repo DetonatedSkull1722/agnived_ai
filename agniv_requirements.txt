@@ -1,0 +1,102 @@
+# Core scientific stack
+numpy
+pandas
+scipy
+scikit-learn
+scikit-image
+matplotlib
+seaborn
+tqdm
+joblib
+
+# Geospatial / Earth Engine
+affine
+rasterio
+shapely
+geopandas
+pyproj
+rtree
+fiona
+pyogrio
+geemap
+geedim
+earthengine-api
+eerepr
+folium
+branca
+
+# Plotting / notebooks / widgets (for your current analysis scripts)
+ipython
+ipywidgets
+ipyleaflet
+jupyterlab_widgets
+traitlets
+traittypes
+
+# ML / DL
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+torchaudio==2.5.1+cu121
+PytorchWildlife==1.2.4.2
+pytorch-lightning==2.5.6
+lightning==2.5.6
+lightning-utilities
+timm==1.0.22
+transformers==4.57.1
+huggingface-hub
+safetensors
+einops
+kornia
+kornia_rs
+segmentation_models_pytorch
+supervision
+ultralytics
+ultralytics-thop
+yolov5
+onnx
+onnxruntime-gpu
+
+# Image / video / utils
+opencv-python
+opencv-contrib-python
+opencv-python-headless
+Pillow
+pi_heif
+pillow-avif-plugin
+imageio
+tifffile
+
+# Web backend / APIs
+fastapi==0.121.2
+uvicorn[standard]
+starlette
+pydantic==2.11.10
+python-multipart
+orjson
+
+# Cloud / storage / HTTP
+requests
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-cloud-storage
+boto3
+s3transfer
+
+# Misc utilities
+python-dotenv
+PyYAML
+rich
+coloredlogs
+click
+fire
+hydra-core
+omegaconf
+tabulate
+
+# Optional but nice for your current tools
+plotly
+tensorboard
+tensorboard-data-server
+geocoder
+wget
