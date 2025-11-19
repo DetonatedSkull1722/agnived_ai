@@ -1,6 +1,6 @@
 # AgniVed Geospatial & Wildlife Analysis Backend
 
-This repository contains the Python backend environment for the AgniVed project. It implements:
+This repository contains the Python fullstack environment with a specialised backend for the AgniVed project. It implements:
 
 - A **Dynamic World + Sentinel-2** land-cover pipeline (AOI → composites → classification/masks/visualizations)
 - A **BigEarthNet v2.0 (reBEN)** vegetation classification pipeline running rdnet on high-quality Sentinel-2 patches
