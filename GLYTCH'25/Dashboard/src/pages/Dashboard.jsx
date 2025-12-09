@@ -141,7 +141,16 @@ export default function Dashboard() {
   const [config, setConfig] = useState({
     startDate: '2023-01-01',
     endDate: '2023-12-31',
-    streamUrl: ''
+    streamUrl: '',
+    // Panos configuration
+    panos_count: 3,
+    panos_area_of_interest: 100.0,
+    panos_min_distance: 20.0,
+    panos_labels: {
+      tree: true,
+      bushes: true,
+      vegetation: true
+    }
   });
 
   // --- STATE: EXECUTION & RESULTS ---
@@ -154,6 +163,10 @@ export default function Dashboard() {
   });
 
   const [expandedWidget, setExpandedWidget] = useState(null);
+  
+  // --- STATE: PANOS MODAL ---
+  const [showPanosModal, setShowPanosModal] = useState(false);
+  const [panosModalTab, setPanosModalTab] = useState('panoramas'); // 'panoramas' or 'plants'
 
   // --- EFFECTS ---
   useEffect(() => {
@@ -188,6 +201,16 @@ export default function Dashboard() {
       }
       return newState;
     });
+  };
+
+  const togglePanosLabel = (label) => {
+    setConfig(prev => ({
+      ...prev,
+      panos_labels: {
+        ...prev.panos_labels,
+        [label]: !prev.panos_labels[label]
+      }
+    }));
   };
 
   const handleMapClick = (latlng) => {
@@ -256,8 +279,19 @@ export default function Dashboard() {
 
     // 4. PANOS (360)
     if (modules.panos) {
-      axios.post(`${API_URL}/panos`, {
-        lat: coords.lat, lon: coords.lng, count: 3, area_of_interest: 100
+      const selectedLabels = Object.keys(config.panos_labels).filter(label => config.panos_labels[label]);
+      axios.post(`${API_URL}/run_panos_and_plant_identification`, {
+        lat: coords.lat,
+        lon: coords.lng,
+        panos_lat: coords.lat,
+        panos_lon: coords.lng,
+        panos_count: config.panos_count,
+        panos_area_of_interest: config.panos_area_of_interest,
+        panos_min_distance: config.panos_min_distance,
+        panos_labels: selectedLabels,
+        buffer_km: radius,
+        date_start: config.startDate,
+        date_end: config.endDate
       }, { headers }).then(res => {
         setResults(prev => ({ ...prev, panos: res.data }));
       }).catch(err => console.error(err))
@@ -388,10 +422,34 @@ export default function Dashboard() {
         );
       case 'panos':
         return (
-          <div className="widget-content">
+          <div className="widget-content panos-widget">
             <h4>360° Ground Truth</h4>
-            <p className="data-text">Found {data?.panos?.length || 0} panoramas.</p>
-            <div className="pano-placeholder">360 View Available</div>
+            {loading.panos ? (
+              <div className="panos-loading">
+                <div className="spinner-large"></div>
+                <p>Scanning panoramas & identifying plants...</p>
+              </div>
+            ) : data?.panos ? (
+              <div className="panos-results-summary">
+                <div className="stat-box">
+                  <span className="stat-number">{data.panos.pano_result?.count_returned || 0}</span>
+                  <span className="stat-label">Panoramas Found</span>
+                </div>
+                <div className="stat-box">
+                  <span className="stat-number">{data.summary?.total_objects_detected || 0}</span>
+                  <span className="stat-label">Objects Detected</span>
+                </div>
+                <div className="stat-box">
+                  <span className="stat-number">{data.summary?.total_plants_identified || 0}</span>
+                  <span className="stat-label">Plants Identified</span>
+                </div>
+                <button className="view-results-btn" onClick={() => setShowPanosModal(true)}>
+                  View Results 🔍
+                </button>
+              </div>
+            ) : (
+              <p className="data-text">No panorama data available.</p>
+            )}
           </div>
         );
       case 'changeDetection':
@@ -418,7 +476,123 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-container">
-      {/* --- LEFT PANEL --- */}
+      {/* --- PANOS MODAL --- */}
+      {showPanosModal && results.panos?.panos && (
+        <div className="modal-overlay panos-modal-overlay" onClick={() => setShowPanosModal(false)}>
+          <div className="modal-content panos-modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header panos-modal-header">
+              <div className="header-top">
+                <h3>360° Ground Truth Analysis</h3>
+                <button className="modal-close-btn" onClick={() => setShowPanosModal(false)}>×</button>
+              </div>
+              <div className="modal-tabs">
+                <button 
+                  className={`tab-btn ${panosModalTab === 'panoramas' ? 'active' : ''}`}
+                  onClick={() => setPanosModalTab('panoramas')}
+                >
+                  📸 Panoramas ({results.panos.panos.pano_result?.count_returned || 0})
+                </button>
+                <button 
+                  className={`tab-btn ${panosModalTab === 'plants' ? 'active' : ''}`}
+                  onClick={() => setPanosModalTab('plants')}
+                >
+                  🌱 Identified Plants ({results.panos.summary?.total_plants_identified || 0})
+                </button>
+              </div>
+            </div>
+
+            <div className="modal-body panos-modal-body">
+              {panosModalTab === 'panoramas' && (
+                <div className="panoramas-section">
+                  <h4>Panoramic Images</h4>
+                  <div className="panoramas-grid">
+                    {results.panos.panos.detected_objects?.map((obj, idx) => (
+                      <div key={idx} className="panorama-card">
+                        {obj.pano_image_base64 ? (
+                          <img 
+                            src={`data:image/jpeg;base64,${obj.pano_image_base64}`} 
+                            alt={`Panorama ${obj.pano_id}`}
+                            className="panorama-image"
+                          />
+                        ) : (
+                          <div className="image-placeholder">No Image</div>
+                        )}
+                        <div className="panorama-info">
+                          <small className="pano-id">ID: {obj.pano_id?.slice(0, 8)}...</small>
+                          <small className="object-count">🎯 {obj.object_detection?.num_crops || 0} Objects</small>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {panosModalTab === 'plants' && (
+                <div className="plants-section">
+                  <h4>Identified Plant Species</h4>
+                  <div className="plants-list">
+                    {results.panos.panos.plant_identification_results?.map((pano_result, pano_idx) => (
+                      <div key={pano_idx} className="pano-plant-group">
+                        <div className="pano-group-header">
+                          <h5>📍 Panorama {pano_idx + 1}</h5>
+                          <span className="crop-count">{pano_result.crop_plant_identifications?.length || 0} crops</span>
+                        </div>
+                        <div className="crops-grid">
+                          {pano_result.crop_plant_identifications?.map((crop, crop_idx) => (
+                            <div key={crop_idx} className="plant-card">
+                              {crop.crop_image_base64 ? (
+                                <img 
+                                  src={`data:image/jpeg;base64,${crop.crop_image_base64}`} 
+                                  alt={`Crop ${crop_idx}`}
+                                  className="plant-crop-image"
+                                />
+                              ) : (
+                                <div className="image-placeholder">No Crop</div>
+                              )}
+                              <div className="plant-details">
+                                <div className="crop-label-badge">{crop.object_label || 'Unknown'}</div>
+                                {crop.top_prediction ? (
+                                  <div className="prediction-info">
+                                    <div className="species-name">{crop.top_prediction.species}</div>
+                                    <div className="confidence-text">{crop.top_prediction.confidence_percentage}</div>
+                                  </div>
+                                ) : crop.error ? (
+                                  <div className="error-text">⚠️ Error</div>
+                                ) : null}
+                                
+                                {crop.predictions && crop.predictions.length > 1 && (
+                                  <div className="other-predictions">
+                                    <small className="pred-title">Other Matches:</small>
+                                    {crop.predictions.slice(1, 3).map((pred, idx) => (
+                                      <div key={idx} className="pred-item">
+                                        <small>{pred.species}</small>
+                                        <small className="pred-confidence">{pred.confidence_percentage}</small>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer panos-modal-footer">
+              <p className="summary-text">
+                Total: {results.panos.summary?.total_panos || 0} panoramas | 
+                {results.panos.summary?.total_objects_detected || 0} objects | 
+                {results.panos.summary?.total_plants_identified || 0} identifications
+              </p>
+              <button className="close-modal-btn" onClick={() => setShowPanosModal(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="control-panel">
         <div className="brand"><h2>🌿 AgniVed Dashboard</h2></div>
         <div className="tabs">
@@ -449,6 +623,72 @@ export default function Dashboard() {
                   <h5>Ground Truth</h5>
                   <label className="checkbox-item"><input type="checkbox" checked={modules.uploads} onChange={() => toggleModule('uploads')} /><span>Community Sightings</span></label>
                   <label className="checkbox-item"><input type="checkbox" checked={modules.panos} onChange={() => toggleModule('panos')} /><span>360° Ground Truth</span></label>
+                  
+                  {/* PANOS CONFIGURATION */}
+                  {modules.panos && (
+                    <div className="sub-config panos-config">
+                      <div className="config-input-group">
+                        <label>Panorama Count</label>
+                        <input 
+                          type="number" 
+                          min="1" 
+                          max="10" 
+                          value={config.panos_count} 
+                          onChange={(e) => setConfig({...config, panos_count: parseInt(e.target.value)})} 
+                        />
+                      </div>
+                      
+                      <div className="config-input-group">
+                        <label>Area of Interest (m)</label>
+                        <input 
+                          type="number" 
+                          min="10" 
+                          max="500" 
+                          value={config.panos_area_of_interest} 
+                          onChange={(e) => setConfig({...config, panos_area_of_interest: parseFloat(e.target.value)})} 
+                        />
+                      </div>
+                      
+                      <div className="config-input-group">
+                        <label>Min Distance (m)</label>
+                        <input 
+                          type="number" 
+                          min="5" 
+                          max="100" 
+                          value={config.panos_min_distance} 
+                          onChange={(e) => setConfig({...config, panos_min_distance: parseFloat(e.target.value)})} 
+                        />
+                      </div>
+                      
+                      <div className="labels-config">
+                        <label className="section-label">Detection Labels</label>
+                        <label className="checkbox-item">
+                          <input 
+                            type="checkbox" 
+                            checked={config.panos_labels.tree} 
+                            onChange={() => togglePanosLabel('tree')} 
+                          />
+                          <span>🌳 Tree</span>
+                        </label>
+                        <label className="checkbox-item">
+                          <input 
+                            type="checkbox" 
+                            checked={config.panos_labels.bushes} 
+                            onChange={() => togglePanosLabel('bushes')} 
+                          />
+                          <span>🌿 Bushes</span>
+                        </label>
+                        <label className="checkbox-item">
+                          <input 
+                            type="checkbox" 
+                            checked={config.panos_labels.vegetation} 
+                            onChange={() => togglePanosLabel('vegetation')} 
+                          />
+                          <span>🍃 Vegetation</span>
+                        </label>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="config-group">
                   <h5>Temporal & Live</h5>
