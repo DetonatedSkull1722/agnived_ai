@@ -374,7 +374,7 @@ if __name__ == "__main__":
         scale=10,
         cloud_cover_max=20,
     )
-    default_aoi = AOIConfig(lon=77.303778, lat=28.560278, buffer_km=3.0)
+    default_aoi = AOIConfig(lon=77.344722, lat=28.564167, buffer_km=3.0)
     outputs = run_landcover_pipeline(default_aoi, default_cfg)
     for name, path in outputs.items():
         print(f"{name}: {path}")

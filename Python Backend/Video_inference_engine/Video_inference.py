@@ -18,7 +18,7 @@ from PytorchWildlife.models import classification as pw_classification
 # Configuration                                                                #
 # -----------------------------------------------------------------------------#
 BUFFER_MINUTES = 10          # 10-minute rolling buffer (live frames kept in RAM)
-FRAME_SKIP = 10              # detect every 10th frame (like test_video.py)
+FRAME_SKIP = 20              # detect every 10th frame (like test_video.py)
 CLASSIFICATION_FRAMES_PER_TRACK = 3
 MODEL_IMAGE_SIZE = 224
 TRACK_TIMEOUT = 60           # frames before track expires

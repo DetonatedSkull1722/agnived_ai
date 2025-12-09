@@ -1,8 +1,12 @@
 import React from "react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Set API base URL from env or default to localhost
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// --------------------
 // Type Definitions
+// --------------------
+
 export interface AOIConfig {
   lon: number;
   lat: number;
@@ -28,7 +32,7 @@ export interface VegetationRequest {
 }
 
 export interface PipelineRequest extends LandcoverRequest {
-  buffer_km: number;
+  veg_buffer_km?: number;
 }
 
 export interface VideoRequest {
@@ -37,7 +41,7 @@ export interface VideoRequest {
 
 export interface LandcoverResults {
   status: string;
-  results: {
+  outputs: {
     sentinel2: string;
     classification: string;
     probabilities: string;
@@ -45,31 +49,31 @@ export interface LandcoverResults {
     visualization: string;
     metadata: string;
   };
+  aoi?: AOIConfig;
 }
 
 export interface VegetationResults {
   status: string;
-  result: {
-    aoi: AOIConfig;
-    cube_path: string;
-    viz_path: string;
-    class_distribution: Record<string, number>;
-    tile_counts: Record<string, number>;
-    avg_confidence: number;
-    tiles_shape: [number, number];
-  };
+  aoi: AOIConfig;
+  cube_path: string;
+  viz_path: string;
+  class_distribution: Record<string, number>;
+  tile_counts: Record<string, number>;
+  avg_confidence: number;
+  tiles_shape: [number, number];
 }
 
 export interface PipelineResults {
   status: string;
-  landcover: LandcoverResults['results'];
-  vegetation: VegetationResults['result'];
+  aoi: AOIConfig;
+  landcover: LandcoverResults["outputs"];
+  vegetation: Omit<VegetationResults, "status" | "aoi">;
 }
 
 export interface VideoResults {
   status: string;
-  message: string;
-  url: string;
+  youtube_url: string;
+  note: string;
 }
 
 export interface Metadata {
@@ -84,15 +88,21 @@ export interface Metadata {
     end: string;
   };
   scale: number;
-  statistics: Record<string, {
-    pixels: number;
-    area_km2: number;
-    percentage: number;
-    description: string;
-  }>;
+  statistics: Record<
+    string,
+    {
+      pixels: number;
+      area_km2: number;
+      percentage: number;
+      description: string;
+    }
+  >;
 }
 
+// --------------------
 // API Client Class
+// --------------------
+
 export class AgniVedAPI {
   private baseURL: string;
 
@@ -100,131 +110,83 @@ export class AgniVedAPI {
     this.baseURL = baseURL;
   }
 
-  /**
-   * Run Dynamic World + Sentinel-2 land-cover pipeline
-   */
+  // Landcover pipeline
   async runLandcover(config: LandcoverRequest): Promise<LandcoverResults> {
     const response = await fetch(`${this.baseURL}/landcover/dw`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(config),
     });
-
-    if (!response.ok) {
-      throw new Error(`Landcover pipeline failed: ${response.statusText}`);
-    }
-
+    if (!response.ok) throw new Error(`Landcover pipeline failed: ${response.statusText}`);
     return response.json();
   }
 
-  /**
-   * Run BigEarthNet vegetation classification
-   */
+  // Vegetation pipeline
   async runVegetation(config: VegetationRequest): Promise<VegetationResults> {
     const response = await fetch(`${this.baseURL}/vegetation/bigearth`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(config),
     });
-
-    if (!response.ok) {
-      throw new Error(`Vegetation pipeline failed: ${response.statusText}`);
-    }
-
+    if (!response.ok) throw new Error(`Vegetation pipeline failed: ${response.statusText}`);
     return response.json();
   }
 
-  /**
-   * Run full pipeline (landcover → vegetation)
-   */
+  // Full pipeline
   async runPipeline(config: PipelineRequest): Promise<PipelineResults> {
     const response = await fetch(`${this.baseURL}/pipeline/run`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(config),
     });
-
-    if (!response.ok) {
-      throw new Error(`Full pipeline failed: ${response.statusText}`);
-    }
-
+    if (!response.ok) throw new Error(`Full pipeline failed: ${response.statusText}`);
     return response.json();
   }
 
-  /**
-   * Start YouTube video wildlife detection
-   */
+  // Start YouTube wildlife detection
   async startVideoClassification(url: string): Promise<VideoResults> {
     const response = await fetch(`${this.baseURL}/video/classify`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ youtube_url: url }),
     });
-
-    if (!response.ok) {
-      throw new Error(`Video classification failed: ${response.statusText}`);
-    }
-
+    if (!response.ok) throw new Error(`Video classification failed: ${response.statusText}`);
     return response.json();
   }
 
-  /**
-   * Get file (image/GeoTIFF) from backend
-   */
+  // Get file (image/GeoTIFF) from backend
   async getFile(path: string): Promise<Blob> {
-    const response = await fetch(
-      `${this.baseURL}/files/image?path=${encodeURIComponent(path)}`
-    );
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch file: ${response.statusText}`);
-    }
-
+    const response = await fetch(`${this.baseURL}/files/image?path=${encodeURIComponent(path)}`);
+    if (!response.ok) throw new Error(`Failed to fetch file: ${response.statusText}`);
     return response.blob();
   }
 
-  /**
-   * Get file URL for direct linking
-   */
+  // Get file URL for direct linking
   getFileURL(path: string): string {
     return `${this.baseURL}/files/image?path=${encodeURIComponent(path)}`;
   }
 
-  /**
-   * Get metadata JSON
-   */
-  async getMetadata(path: string = 'Final_Res_DW/metadata.json'): Promise<Metadata> {
+  // Get metadata JSON
+  async getMetadata(path: string = "Final_Res_DW/metadata.json"): Promise<Metadata> {
     const blob = await this.getFile(path);
     const text = await blob.text();
     return JSON.parse(text);
   }
 
-  /**
-   * Download file to user's computer
-   */
+  // Download file to user's computer
   async downloadFile(path: string, filename?: string): Promise<void> {
     const blob = await this.getFile(path);
     const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
-    a.download = filename || path.split('/').pop() || 'download';
+    a.download = filename || path.split("/").pop() || "download";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   }
 
-  /**
-   * Check backend health/status
-   */
+  // Check backend health/status
   async healthCheck(): Promise<boolean> {
     try {
       const response = await fetch(`${this.baseURL}/`);
@@ -255,9 +217,9 @@ export function useAgniVedAPI() {
       onSuccess?.(result);
       return result;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      const message = err instanceof Error ? err.message : "Unknown error";
       setError(message);
-      console.error('API Error:', err);
+      console.error("API Error:", err);
       return null;
     } finally {
       setLoading(false);
@@ -272,25 +234,17 @@ export function generateCacheKey(config: Partial<LandcoverRequest | VegetationRe
   const normalized = {
     lon: config.lon?.toFixed(4),
     lat: config.lat?.toFixed(4),
-    buffer: 'buffer_km' in config ? config.buffer_km : config.buffer_km,
-    dates: 'date_start' in config ? `${config.date_start}_${config.date_end}` : null,
+    buffer: config.buffer_km,
+    dates: "date_start" in config ? `${config.date_start}_${config.date_end}` : null,
   };
-  
-  return Object.values(normalized).filter(Boolean).join('_');
+  return Object.values(normalized).filter(Boolean).join("_");
 }
 
 // Utility: Parse backend error messages
 export function parseAPIError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  
-  if (typeof error === 'object' && error !== null && 'message' in error) {
-    return String(error.message);
-  }
-  
-  return 'An unknown error occurred';
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null && "message" in error) return String((error as any).message);
+  return "An unknown error occurred";
 }
 
-// Export everything
 export default api;

@@ -1,8 +1,9 @@
 """
 create_vegetation_timeseries.py
 
-(Updated: fixes imageio/ffmpeg writer issues by using imageio.v3.imwrite with fallback
- to legacy imageio.get_writer.)
+Updated: skip windows that have no Sentinel-2 or Dynamic World (no empty frames).
+Also ensures all frames have identical dimensions and are padded to a multiple of 16
+to avoid ffmpeg macro block size errors.
 """
 
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ import sys
 import ee
 import geemap
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 import imageio.v3 as iio
 import rasterio
 
@@ -158,26 +159,64 @@ def split_date_range(start_date: str, end_date: str, windows: int) -> List[Dict[
     return ranges
 
 
+# --- Utilities for consistent frame size & padding --- 
+
+def make_frame_consistent(img: Image.Image, target_size: (int, int)) -> Image.Image:
+    """
+    Resize (keeping aspect) and pad to target_size (w,h) with black background.
+    """
+    return ImageOps.fit(img, target_size, method=Image.BILINEAR, centering=(0.5, 0.5))
+
+
+def pad_to_multiple_of_16(img: Image.Image) -> Image.Image:
+    w, h = img.size
+    target_w = ( (w + 15) // 16 ) * 16
+    target_h = ( (h + 15) // 16 ) * 16
+    if (target_w, target_h) == (w, h):
+        return img
+    # center pad
+    new_img = Image.new("RGB", (target_w, target_h), (0,0,0))
+    left = (target_w - w) // 2
+    top = (target_h - h) // 2
+    new_img.paste(img, (left, top))
+    return new_img
+
+
 # --- Video helper (works with imageio.v3 and falls back to legacy imageio) ---
 
 def save_video(frame_paths: List[Path], out_path: Path, fps: int = 5, slow_factor: int = 2):
     """
-    Save an MP4. Preferred: use imageio.v3.imwrite with ffmpeg plugin.
-    If that fails, fallback to legacy imageio.get_writer.
+    Save an MP4. Frames are normalized to same size and padded to multiple of 16.
     """
-    frames = []
+    if not frame_paths:
+        raise RuntimeError("No frames available to write video (all windows were empty).")
+
+    # Load frames and determine a target size (use max width/height among frames to avoid too much upscale)
+    pil_frames = []
+    max_w = 0
+    max_h = 0
     for p in frame_paths:
         img = Image.open(str(p)).convert('RGB')
-        arr = np.array(img)
-        for _ in range(slow_factor):
-            frames.append(arr)
+        pil_frames.append(img)
+        w,h = img.size
+        if w > max_w: max_w = w
+        if h > max_h: max_h = h
 
-    # Try v3.imwrite with ffmpeg plugin
+    # Use that max as our target size (fit each image into it preserving aspect)
+    target_size = (max_w, max_h)
+    normalized = []
+    for img in pil_frames:
+        # fit + pad to target_size
+        fitted = make_frame_consistent(img, target_size)
+        padded = pad_to_multiple_of_16(fitted)
+        normalized.append(np.array(padded))
+
+    # write via v3.imwrite plugin='ffmpeg' if available, else fallback to legacy writer
     try:
         iio.imwrite(
             str(out_path),
-            frames,
-            plugin='ffmpeg',         # requires imageio-ffmpeg
+            normalized,
+            plugin='ffmpeg',
             fps=fps,
             codec='libx264',
             pixelformat='yuv420p'
@@ -187,12 +226,13 @@ def save_video(frame_paths: List[Path], out_path: Path, fps: int = 5, slow_facto
         print("imageio.v3 ffmpeg write failed:", e)
         print("Attempting legacy imageio fallback (get_writer)...")
 
-    # Fallback to legacy imageio (if available)
+    # legacy fallback
     try:
         import imageio
         writer = imageio.get_writer(str(out_path), fps=fps, codec='libx264')
-        for f in frames:
-            writer.append_data(f)
+        for frame in normalized:
+            for _ in range(slow_factor):
+                writer.append_data(frame)
         writer.close()
         return
     except Exception as e2:
@@ -208,8 +248,8 @@ def process_timeseries(aoi_cfg: AOIConfig, dl_cfg: DownloadConfig) -> Dict:
     init_ee(dl_cfg.ee_project)
 
     aoi = create_aoi(aoi_cfg)
-
     windows = split_date_range(dl_cfg.date_start, dl_cfg.date_end, dl_cfg.frames)
+
     frame_paths: List[Path] = []
     veg_stats = []
 
@@ -217,30 +257,22 @@ def process_timeseries(aoi_cfg: AOIConfig, dl_cfg: DownloadConfig) -> Dict:
         print(f"Processing frame {idx+1}/{len(windows)}: {w['start']} -> {w['end']}")
         s2_coll = load_sentinel2(aoi, dl_cfg, w['start'], w['end'])
         if s2_coll.size().getInfo() == 0:
-            print("  No Sentinel-2 for this window; saving empty frame")
-            blank = np.zeros((256,256), dtype='float32')
-            png_path = dl_cfg.output_dir / f"veg_prob_{idx:03d}.png"
-            save_probability_png(blank, png_path)
-            frame_paths.append(png_path)
-            veg_stats.append({"start": w['start'], "end": w['end'], "veg_pct": 0.0})
+            print("  No Sentinel-2 for this window; skipping frame")
             continue
-        s2_img = create_sentinel2_composite(s2_coll)
 
         dw_coll = load_dynamic_world(aoi, w['start'], w['end'])
         if dw_coll.size().getInfo() == 0:
-            print("  No Dynamic World for this window; saving empty frame")
-            blank = np.zeros((256,256), dtype='float32')
-            png_path = dl_cfg.output_dir / f"veg_prob_{idx:03d}.png"
-            save_probability_png(blank, png_path)
-            frame_paths.append(png_path)
-            veg_stats.append({"start": w['start'], "end": w['end'], "veg_pct": 0.0})
+            print("  No Dynamic World for this window; skipping frame")
             continue
 
+        # Both present -> proceed
+        s2_img = create_sentinel2_composite(s2_coll)
         prob_img = create_probability_composite(dw_coll)
         veg_prob_img = create_vegetation_probability_image(prob_img)
 
         veg_prob_tif = download_geotiff(veg_prob_img, aoi, f"veg_prob_{idx:03d}.tif", dl_cfg)
         arr = read_raster_as_array(veg_prob_tif)
+
         png_path = dl_cfg.output_dir / f"veg_prob_{idx:03d}.png"
         save_probability_png(arr, png_path)
 
@@ -249,6 +281,9 @@ def process_timeseries(aoi_cfg: AOIConfig, dl_cfg: DownloadConfig) -> Dict:
         veg_stats.append({"start": w['start'], "end": w['end'], "veg_pct": veg_pct})
 
         frame_paths.append(png_path)
+
+    if not frame_paths:
+        raise RuntimeError("All windows were empty - no frames downloaded. Try a wider date range or smaller windows.")
 
     video_path = dl_cfg.output_dir / "vegetation_timeseries.mp4"
     print(f"Assembling video to {video_path} at {dl_cfg.fps} fps ({len(frame_paths)} frames)")

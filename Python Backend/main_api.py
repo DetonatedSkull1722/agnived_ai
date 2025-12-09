@@ -22,6 +22,16 @@ app = FastAPI(title="AgniVed Backend API (refactor)", version="1.0.0")
 logger = logging.getLogger("main_api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s: %(message)s")
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Or restrict to ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # -----------------------------------------------------------------------------
 # Paths / constants
 # -----------------------------------------------------------------------------
