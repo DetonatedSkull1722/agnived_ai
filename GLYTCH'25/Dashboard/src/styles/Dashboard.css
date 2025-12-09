@@ -539,3 +539,170 @@ input[type="range"] {
   display: flex;
   justify-content: space-between;
 }
+
+/* --- CONFIG PANEL UPDATES --- */
+.config-group {
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  padding-bottom: 8px;
+}
+
+.config-group h5 {
+  margin: 0 0 8px 0;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.sub-config {
+  margin-left: 24px;
+  margin-bottom: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.sub-config input {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid #444;
+  color: white;
+  padding: 4px;
+  font-size: 0.8rem;
+  border-radius: 4px;
+}
+
+/* --- GRID SYSTEM (RIGHT PANEL) --- */
+.command-grid-container {
+  padding: 20px;
+  height: 100%;
+  background: #0f172a; /* Dark background behind boxes */
+  display: flex;
+  flex-direction: column;
+}
+
+.grid-matrix {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(2, 300px);
+  gap: 15px;
+  flex: 1;
+  position: relative;
+}
+
+.grid-box {
+  background: #000; /* Black Boxes */
+  border: 1px solid #333;
+  border-radius: 8px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.grid-box:hover {
+  border-color: #10b981;
+}
+
+/* --- EXPANSION LOGIC --- */
+.grid-box.expanded {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 50;
+  border: 2px solid #10b981;
+}
+
+/* --- WIDGET STATES --- */
+.widget-loader {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: #10b981;
+}
+
+.widget-inactive {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: #444;
+  font-style: italic;
+}
+
+.widget-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.widget-content h4 {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  margin: 0;
+  background: rgba(0,0,0,0.7);
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: #10b981;
+  font-size: 0.8rem;
+  z-index: 2;
+}
+
+.result-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.stat-overlay, .stat-big {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  background: rgba(0,0,0,0.8);
+  padding: 4px 8px;
+  color: white;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.stat-big {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 2rem;
+  font-weight: bold;
+  bottom: auto;
+}
+
+.stat-big.danger { color: #ef4444; }
+
+.expand-hint {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  font-size: 0.7rem;
+  color: #666;
+  background: rgba(0,0,0,0.8);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Spinner Animation */
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid rgba(16, 185, 129, 0.3);
+  border-top-color: #10b981;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 10px;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }

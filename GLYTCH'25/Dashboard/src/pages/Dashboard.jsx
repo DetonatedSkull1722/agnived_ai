@@ -1,21 +1,23 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Circle, Marker, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Circle, Marker, ImageOverlay, useMapEvents } from 'react-leaflet';
 import axios from 'axios';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
 import '../styles/Dashboard.css';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-
-// --- LEAFLET ICON FIX ---
-import icon from 'leaflet/dist/images/marker-icon.png';
-import iconShadow from 'leaflet/dist/images/marker-shadow.png';
+// --- ASSETS ---
 import bengalTigerImg from '../assets/bengal-tiger.png';
 import indianElephantImg from '../assets/indian-elephant.png';
 import asiaticLionImg from '../assets/asiatic-lion.png';
 import indianRhinoImg from '../assets/indian-rhino.png';
 import snowLeopardImg from '../assets/snow-leopard.png';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
+// --- LEAFLET ICON FIX ---
+import icon from 'leaflet/dist/images/marker-icon.png';
+import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 
 let DefaultIcon = L.icon({
   iconUrl: icon,
@@ -99,28 +101,61 @@ const SecureImage = ({ imageId, alt }) => {
   return <img src={imgSrc} alt={alt} />;
 };
 
+// --- HELPER: CONVERT BACKEND PATH TO URL ---
+const getFilename = (fullPath) => {
+  if (!fullPath) return "";
+  // Removes "D:\Projects\..." and leaves just "image.png"
+  return fullPath.split(/[/\\]/).pop();
+};
+
 export default function Dashboard() {
-  // --- STATE ---
+  // --- STATE: GLOBAL ---
   const [activeTab, setActiveTab] = useState('analysis');
   const [viewState, setViewState] = useState('map'); 
   
-  // Map State
+  // --- STATE: GEOSPATIAL ---
   const [coords, setCoords] = useState({ lat: 28.56027870, lng: 77.29239823 });
   const [radius, setRadius] = useState(3);
-  const [showLabels, setShowLabels] = useState(false); // Toggle Map Labels
+  const [showLabels, setShowLabels] = useState(false);
+  const [mapOverlays, setMapOverlays] = useState({
+    landcover: null,  // Base64 string
+    vegetation: null, // Base64 string
+    bounds: null      // [ [lat, lon], [lat, lon] ]
+  });
 
-  // Upload State
+  // --- STATE: UPLOAD ---
   const [uploadForm, setUploadForm] = useState({ species: '', file: null });
-  const [myUploads, setMyUploads] = useState([]); // Recent uploads
-  const [showGalleryModal, setShowGalleryModal] = useState(false); // View More Modal
+  const [myUploads, setMyUploads] = useState([]);
+  const [showGalleryModal, setShowGalleryModal] = useState(false);
 
-  // Data State
-  const [analysisResults, setAnalysisResults] = useState(null);
-  const [error, setError] = useState('');
+  // --- STATE: MODULE CONFIGURATION ---
+  const [modules, setModules] = useState({
+    landcover: true,
+    vegetation: false,
+    uploads: true,
+    panos: false,
+    changeDetection: false,
+    wildlifeStream: false
+  });
+
+  const [config, setConfig] = useState({
+    startDate: '2023-01-01',
+    endDate: '2023-12-31',
+    streamUrl: ''
+  });
+
+  // --- STATE: EXECUTION & RESULTS ---
+  const [loading, setLoading] = useState({
+    landcover: false, vegetation: false, uploads: false, panos: false, changeDetection: false, wildlifeStream: false
+  });
+
+  const [results, setResults] = useState({
+    landcover: null, vegetation: null, uploads: [], panos: null, changeDetection: null, wildlifeStream: null
+  });
+
+  const [expandedWidget, setExpandedWidget] = useState(null);
 
   // --- EFFECTS ---
-
-  // Fetch uploads when switching to Upload tab
   useEffect(() => {
     if (activeTab === 'upload') {
       fetchMyUploads();
@@ -133,48 +168,120 @@ export default function Dashboard() {
       const res = await axios.get(`${API_URL}/uploads/me?limit=10`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      // Assuming backend returns { uploads: [...] }
       setMyUploads(res.data.uploads || []);
     } catch (err) {
       console.error("Error fetching uploads", err);
     }
   };
 
-  // --- HANDLERS ---
+  // --- HANDLERS: CONFIG ---
+  const toggleModule = (key) => {
+    setModules(prev => {
+      const newState = { ...prev, [key]: !prev[key] };
+      // Logic: If Vegetation is True, Landcover MUST be True
+      if (key === 'vegetation' && newState.vegetation) {
+        newState.landcover = true;
+      }
+      // Logic: If Landcover is unchecked, Vegetation MUST be unchecked
+      if (key === 'landcover' && !newState.landcover) {
+        newState.vegetation = false;
+      }
+      return newState;
+    });
+  };
 
   const handleMapClick = (latlng) => {
     setCoords({ lat: latlng.lat, lng: latlng.lng });
   };
 
+  // --- HANDLERS: EXECUTION ---
   const handleRunAnalysis = async () => {
-    setViewState('loading');
-    setError('');
-    try {
-      const token = localStorage.getItem('token');
-      const payload = {
-        lon: coords.lng,
-        lat: coords.lat,
-        buffer_km: radius,
-        date_start: "2023-01-01",
-        date_end: "2023-12-31",
-        scale: 10,
-        cloud_cover_max: 20,
-        panos_count: 3,
-        panos_area_of_interest: 100.0,
-        panos_min_distance: 20.0,
-        panos_labels: ["tree", "bushes", "animal"]
-      };
+    setViewState('grid'); // Switch to Grid View
+    const token = localStorage.getItem('token');
+    const headers = { Authorization: `Bearer ${token}` };
 
-      const response = await axios.post(
-        `${API_URL}/run_landcover_vegetation_and_panos`, 
-        payload,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      setAnalysisResults(response.data);
-      setViewState('results');
-    } catch (err) {
-      setError(err.response?.data?.detail?.error || "Analysis failed.");
-      setViewState('map');
+    // Reset Results & Set Loading based on selected modules
+    const newLoading = {};
+    Object.keys(modules).forEach(key => {
+      if (modules[key]) newLoading[key] = true;
+    });
+    setLoading(newLoading);
+
+    // 1. LANDCOVER
+    if (modules.landcover) {
+      axios.post(`${API_URL}/run_landcover`, {
+        lon: coords.lng, lat: coords.lat, buffer_km: radius,
+        date_start: config.startDate, date_end: config.endDate
+      }, { headers }).then(res => {
+        setResults(prev => ({ ...prev, landcover: res.data }));
+        if (res.data.image_base64) {
+            setMapOverlays(prev => ({
+                ...prev,
+                landcover: `data:image/png;base64,${res.data.image_base64}`,
+                // Ideally backend should return bounds, for now using rough estimate based on radius
+                // NOTE: This assumes the image is centered on the coords. Adjust logic if needed.
+                bounds: [[coords.lat - (radius/111), coords.lng - (radius/111)], [coords.lat + (radius/111), coords.lng + (radius/111)]]
+            }));
+        }
+      }).catch(err => console.error(err))
+      .finally(() => setLoading(prev => ({ ...prev, landcover: false })));
+    }
+
+    // 2. VEGETATION
+    if (modules.vegetation) {
+      axios.post(`${API_URL}/run_vegetation`, {
+        lon: coords.lng, lat: coords.lat, buffer_km: radius
+      }, { headers }).then(res => {
+        setResults(prev => ({ ...prev, vegetation: res.data }));
+        if (res.data.image_base64) {
+            setMapOverlays(prev => ({
+                ...prev,
+                vegetation: `data:image/png;base64,${res.data.image_base64}`,
+                bounds: [[coords.lat - (radius/111), coords.lng - (radius/111)], [coords.lat + (radius/111), coords.lng + (radius/111)]]
+            }));
+        }
+      }).catch(err => console.error(err))
+      .finally(() => setLoading(prev => ({ ...prev, vegetation: false })));
+    }
+
+    // 3. UPLOADS
+    if (modules.uploads) {
+      axios.post(`${API_URL}/uploads/search`, {
+        latitude: coords.lat, longitude: coords.lng, radius_km: radius
+      }, { headers }).then(res => {
+        setResults(prev => ({ ...prev, uploads: res.data.uploads || [] }));
+      }).catch(err => console.error(err))
+      .finally(() => setLoading(prev => ({ ...prev, uploads: false })));
+    }
+
+    // 4. PANOS (360)
+    if (modules.panos) {
+      axios.post(`${API_URL}/panos`, {
+        lat: coords.lat, lon: coords.lng, count: 3, area_of_interest: 100
+      }, { headers }).then(res => {
+        setResults(prev => ({ ...prev, panos: res.data }));
+      }).catch(err => console.error(err))
+      .finally(() => setLoading(prev => ({ ...prev, panos: false })));
+    }
+
+    // 5. CHANGE DETECTION
+    if (modules.changeDetection) {
+      // Simulating heavy process
+      setTimeout(() => {
+        setResults(prev => ({ 
+          ...prev, 
+          changeDetection: { status: "Detected", percent_change: 12.5, map_image: "placeholder_diff.png" } 
+        }));
+        setLoading(prev => ({ ...prev, changeDetection: false }));
+      }, 3500);
+    }
+
+    // 6. WILDLIFE STREAM
+    if (modules.wildlifeStream) {
+       setTimeout(() => {
+        setResults(prev => ({ ...prev, wildlifeStream: config.streamUrl }));
+        setLoading(prev => ({ ...prev, wildlifeStream: false }));
+       }, 1000);
     }
   };
 
@@ -199,18 +306,17 @@ export default function Dashboard() {
 
       alert("Upload Successful!");
       setUploadForm({ species: '', file: null });
-      fetchMyUploads(); // Refresh gallery
+      fetchMyUploads();
     } catch (err) {
       alert("Upload failed");
     }
   };
 
-  // --- RENDER HELPERS ---
+  // --- RENDERERS ---
 
   const renderInformaticCarousel = () => (
     <div className="info-carousel-container">
       <div className="info-track">
-        {/* Doubled for infinite scroll effect */}
         {[...SPECIES_DATA, ...SPECIES_DATA].map((item, idx) => (
           <div key={idx} className="species-info-card">
             <div className="card-image">
@@ -228,126 +334,147 @@ export default function Dashboard() {
     </div>
   );
 
+  const renderWidgetContent = (type) => {
+    if (loading[type]) return <div className="widget-loader"><div className="spinner"></div><p>Processing Pipeline...</p></div>;
+    if (!modules[type]) return <div className="widget-inactive"><p>Module Inactive</p></div>;
+
+    const data = results[type];
+    if (!data && type !== 'wildlifeStream') return <div className="widget-waiting"><p>Waiting for data...</p></div>;
+
+    switch(type) {
+      case 'landcover':
+        return (
+          <div className="widget-content">
+            <h4>Landcover Classification</h4>
+            {/* UPDATED: Use base64 string */}
+            {data?.image_base64 ? (
+               <img 
+                 src={`data:image/png;base64,${data.image_base64}`} 
+                 alt="Landcover Map" 
+                 className="result-img" 
+               />
+            ) : <p className="data-text">Map data unavailable.</p>}
+            <div className="stat-overlay">Cloud Cover: {data?.cloud_cover_max || 0}%</div>
+          </div>
+        );
+      case 'vegetation':
+        return (
+          <div className="widget-content">
+            <h4>Vegetation Index</h4>
+            {/* UPDATED: Use base64 string */}
+            {data?.image_base64 ? (
+               <img 
+                 src={`data:image/png;base64,${data.image_base64}`} 
+                 alt="Vegetation Map" 
+                 className="result-img" 
+               />
+            ) : <p className="data-text">Index unavailable.</p>}
+            <div className="stat-overlay">Confidence: {((data?.avg_confidence || 0) * 100).toFixed(1)}%</div>
+          </div>
+        );
+      case 'uploads':
+        return (
+          <div className="widget-content">
+            <h4>Nearby Fauna</h4>
+            <div className="mini-gallery">
+              {data.slice(0, 4).map((img, i) => (
+                <div key={i} className="mini-thumb">
+                  <SecureImage imageId={img.id} alt={img.species} />
+                </div>
+              ))}
+              {data.length === 0 && <p className="data-text">No sightings in range.</p>}
+            </div>
+          </div>
+        );
+      case 'panos':
+        return (
+          <div className="widget-content">
+            <h4>360° Ground Truth</h4>
+            <p className="data-text">Found {data?.panos?.length || 0} panoramas.</p>
+            <div className="pano-placeholder">360 View Available</div>
+          </div>
+        );
+      case 'changeDetection':
+        return (
+          <div className="widget-content">
+            <h4>Change Detection</h4>
+            <div className="stat-big danger">{data.percent_change}%</div>
+            <p className="data-text">Forest Loss Detected</p>
+            <p className="date-range">{config.startDate} to {config.endDate}</p>
+          </div>
+        );
+      case 'wildlifeStream':
+        return (
+          <div className="widget-content video-mode">
+            <h4>Live Feed</h4>
+            {data ? (
+               <iframe width="100%" height="100%" src={`https://www.youtube.com/embed/${data.split('v=')[1] || ''}?autoplay=1&mute=1`} title="Wildlife" frameBorder="0" allow="autoplay; encrypted-media"></iframe>
+            ) : <p>Invalid Stream URL</p>}
+          </div>
+        );
+      default: return null;
+    }
+  };
+
   return (
     <div className="dashboard-container">
       {/* --- LEFT PANEL --- */}
       <div className="control-panel">
-        <div className="brand">
-          <h2>🌿 AgniVed Dashboard</h2>
-        </div>
-
+        <div className="brand"><h2>🌿 AgniVed Dashboard</h2></div>
         <div className="tabs">
-          <button 
-            className={activeTab === 'analysis' ? 'active' : ''} 
-            onClick={() => setActiveTab('analysis')}
-          >
-            Analysis
-          </button>
-          <button 
-            className={activeTab === 'upload' ? 'active' : ''} 
-            onClick={() => setActiveTab('upload')}
-          >
-            Upload
-          </button>
+          <button className={activeTab === 'analysis' ? 'active' : ''} onClick={() => setActiveTab('analysis')}>Analysis</button>
+          <button className={activeTab === 'upload' ? 'active' : ''} onClick={() => setActiveTab('upload')}>Upload</button>
         </div>
 
         <div className="panel-content">
           {activeTab === 'analysis' ? (
-            <div className="analysis-form">
+            <div className="analysis-config">
               <h3>Run Geospatial Analysis</h3>
-              {/* Inputs */}
               <div className="input-row">
-                <div className="group">
-                  <label>Latitude</label>
-                  <input 
-                    type="number" 
-                    value={coords.lat} 
-                    onChange={(e) => setCoords({...coords, lat: parseFloat(e.target.value)})}
-                  />
+                <div className="group"><label>Lat</label><input type="number" value={coords.lat} onChange={(e) => setCoords({...coords, lat: parseFloat(e.target.value)})} /></div>
+                <div className="group"><label>Lon</label><input type="number" value={coords.lng} onChange={(e) => setCoords({...coords, lng: parseFloat(e.target.value)})} /></div>
+              </div>
+              <div className="group range-group">
+                <label>Radius: {radius} km</label>
+                <input type="range" min="3" max="20" value={radius} onChange={(e) => setRadius(parseInt(e.target.value))} />
+              </div>
+
+              <div className="module-selector">
+                <div className="config-group">
+                  <h5>Satellite Intelligence</h5>
+                  <label className="checkbox-item"><input type="checkbox" checked={modules.landcover} onChange={() => toggleModule('landcover')} /><span>S2 Landcover Classification</span></label>
+                  <label className="checkbox-item"><input type="checkbox" checked={modules.vegetation} onChange={() => toggleModule('vegetation')} /><span>S2 Vegetation (Requires Landcover)</span></label>
                 </div>
-                <div className="group">
-                  <label>Longitude</label>
-                  <input 
-                    type="number" 
-                    value={coords.lng} 
-                    onChange={(e) => setCoords({...coords, lng: parseFloat(e.target.value)})}
-                  />
+                <div className="config-group">
+                  <h5>Ground Truth</h5>
+                  <label className="checkbox-item"><input type="checkbox" checked={modules.uploads} onChange={() => toggleModule('uploads')} /><span>Community Sightings</span></label>
+                  <label className="checkbox-item"><input type="checkbox" checked={modules.panos} onChange={() => toggleModule('panos')} /><span>360° Ground Truth</span></label>
+                </div>
+                <div className="config-group">
+                  <h5>Temporal & Live</h5>
+                  <label className="checkbox-item"><input type="checkbox" checked={modules.changeDetection} onChange={() => toggleModule('changeDetection')} /><span>Change Detection Pipeline</span></label>
+                  {modules.changeDetection && (<div className="sub-config"><input type="date" value={config.startDate} onChange={e => setConfig({...config, startDate: e.target.value})} /><input type="date" value={config.endDate} onChange={e => setConfig({...config, endDate: e.target.value})} /></div>)}
+                  <label className="checkbox-item"><input type="checkbox" checked={modules.wildlifeStream} onChange={() => toggleModule('wildlifeStream')} /><span>Wildlife Trap Stream</span></label>
+                  {modules.wildlifeStream && (<div className="sub-config"><input type="text" placeholder="YouTube URL..." value={config.streamUrl} onChange={e => setConfig({...config, streamUrl: e.target.value})} /></div>)}
                 </div>
               </div>
 
-              <div className="group">
-                <label>Analysis Radius: {radius} km</label>
-                <input 
-                  type="range" min="3" max="20" step="1"
-                  value={radius} onChange={(e) => setRadius(parseInt(e.target.value))} 
-                />
-              </div>
-
-              {error && <div className="error-box">{error}</div>}
-
-              <button 
-                className="action-btn" 
-                onClick={handleRunAnalysis}
-                disabled={viewState === 'loading'}
-              >
-                {viewState === 'loading' ? 'Running Models...' : 'Run Analysis'}
-              </button>
-              
-              {/* New Informatic Carousel */}
-              <div className="carousel-section">
-                <h4>Protected Species Intel</h4>
-                {renderInformaticCarousel()}
-              </div>
+              <button className="action-btn" onClick={handleRunAnalysis}>RUN ANALYSIS PIPELINE</button>
+              <div className="carousel-section"><h4>Protected Species Intel</h4>{renderInformaticCarousel()}</div>
             </div>
           ) : (
             <div className="upload-wrapper">
               <form className="upload-form" onSubmit={handleUpload}>
                 <h3>Submit Observation</h3>
-                <div className="group">
-                  <label>Species Name (Optional)</label>
-                  <input 
-                    type="text" placeholder="e.g. Panthera tigris"
-                    value={uploadForm.species}
-                    onChange={e => setUploadForm({...uploadForm, species: e.target.value})}
-                  />
-                </div>
-
-                <div className="group">
-                  <div className="file-drop-area">
-                    <input 
-                      type="file" accept="image/*"
-                      onChange={e => setUploadForm({...uploadForm, file: e.target.files[0]})}
-                    />
-                    <p>{uploadForm.file ? uploadForm.file.name : "Drag & Drop Image Evidence"}</p>
-                  </div>
-                </div>
-
-                <div className="coordinates-display">
-                  <p>Location: {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}</p>
-                </div>
-
-                <button type="submit" className="action-btn upload-btn">
-                  Upload Data
-                </button>
+                <div className="group"><label>Species Name (Optional)</label><input type="text" placeholder="e.g. Panthera tigris" value={uploadForm.species} onChange={e => setUploadForm({...uploadForm, species: e.target.value})} /></div>
+                <div className="group"><div className="file-drop-area"><input type="file" accept="image/*" onChange={e => setUploadForm({...uploadForm, file: e.target.files[0]})} /><p>{uploadForm.file ? uploadForm.file.name : "Drag & Drop Image Evidence"}</p></div></div>
+                <div className="coordinates-display"><p>Location: {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}</p></div>
+                <button type="submit" className="action-btn upload-btn">Upload Data</button>
               </form>
-
-              {/* Uploads Gallery Collage */}
               <div className="uploads-gallery-section">
-                <div className="gallery-header">
-                  <h4>Recent Uploads</h4>
-                  {myUploads.length > 4 && (
-                    <button className="text-btn" onClick={() => setShowGalleryModal(true)}>
-                      View More
-                    </button>
-                  )}
-                </div>
-                
+                <div className="gallery-header"><h4>Recent Uploads</h4>{myUploads.length > 4 && <button className="text-btn" onClick={() => setShowGalleryModal(true)}>View More</button>}</div>
                 <div className="gallery-grid">
-                  {myUploads.slice(0, 4).map((up) => (
-                    <div key={up.id} className="gallery-item">
-                      <SecureImage imageId={up.id} alt={up.species} />
-                    </div>
-                  ))}
+                  {myUploads.slice(0, 4).map((up) => (<div key={up.id} className="gallery-item"><SecureImage imageId={up.id} alt={up.species} /></div>))}
                   {myUploads.length === 0 && <p className="no-data">No uploads yet.</p>}
                 </div>
               </div>
@@ -356,96 +483,57 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* --- RIGHT PANEL --- */}
       <div className="visual-panel">
-        
-        {viewState === 'loading' && (
-          <div className="loader-overlay">
-            <div className="spinner"></div>
-            <p>Processing Satellite Imagery...</p>
-          </div>
-        )}
-
         {viewState === 'map' && (
           <div className="map-wrapper">
-            {/* Legend Toggle Button */}
-            <button 
-              className={`legend-toggle ${showLabels ? 'active' : ''}`}
-              onClick={() => setShowLabels(!showLabels)}
-            >
-              {showLabels ? 'Hide Labels' : 'Show Labels'}
-            </button>
-
-            <MapContainer 
-              center={coords} zoom={13} 
-              style={{ width: '100%', height: '100%' }}
-              scrollWheelZoom={true}
-            >
-              {/* 1. Base Layer: Satellite */}
-              <TileLayer
-                attribution='&copy; Esri'
-                url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-              />
-              
-              {/* 2. Overlay Layer: Labels/Places (Toggleable) */}
-              {showLabels && (
-                <TileLayer
-                  url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
-                />
-              )}
-              
-              <LocationSelector onLocationSelect={handleMapClick} />
-              <Marker position={coords} />
-              <Circle 
-                center={coords} radius={radius * 1000}
-                pathOptions={{
-                  fillColor: '#10b981', fillOpacity: 0.2,
-                  color: '#0f2d25', weight: 2
-                }}
-              />
-            </MapContainer>
+             <button className={`legend-toggle ${showLabels ? 'active' : ''}`} onClick={() => setShowLabels(!showLabels)}>{showLabels ? 'Hide Labels' : 'Show Labels'}</button>
+             <MapContainer center={coords} zoom={13} style={{ width: '100%', height: '100%' }}>
+               <TileLayer attribution='&copy; Esri' url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" />
+               {showLabels && <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}" />}
+               <LocationSelector onLocationSelect={handleMapClick} />
+               <Marker position={coords} />
+               <Circle center={coords} radius={radius * 1000} pathOptions={{ fillColor: '#10b981', fillOpacity: 0.2, color: '#0f2d25', weight: 2 }} />
+               
+               {/* Map Overlays Logic - Using Base64 */}
+               {mapOverlays.landcover && mapOverlays.bounds && (
+                 <ImageOverlay 
+                   url={mapOverlays.landcover} // Base64 data string
+                   bounds={mapOverlays.bounds} 
+                   opacity={0.6} 
+                 />
+               )}
+               {mapOverlays.vegetation && mapOverlays.bounds && (
+                 <ImageOverlay 
+                   url={mapOverlays.vegetation} // Base64 data string
+                   bounds={mapOverlays.bounds} 
+                   opacity={0.6} 
+                 />
+               )}
+             </MapContainer>
           </div>
         )}
 
-        {viewState === 'results' && analysisResults && (
-          <div className="results-grid-container">
-            <div className="results-header">
-              <h2>Analysis Report</h2>
-              <button className="back-btn" onClick={() => setViewState('map')}>← Map</button>
-            </div>
-            {/* ... Existing Results Grid Code (Kept same as before) ... */}
-            <div className="grid-layout">
-               <div className="result-card">
-                  <h4>Vegetation Distribution</h4>
-                  {/* ... render logic ... */}
-                  {analysisResults.vegetation?.class_distribution && 
-                   <ul>{Object.entries(analysisResults.vegetation.class_distribution).map(([k,v]) => <li key={k}>{k}: {(v*100).toFixed(1)}%</li>)}</ul>}
-               </div>
-               {/* Add other cards here as per previous code */}
-               <div className="result-card"><h4>AI Confidence</h4><div className="big-stat">{(analysisResults.vegetation?.avg_confidence * 100).toFixed(1)}%</div></div>
+        {viewState === 'grid' && (
+          <div className="command-grid-container">
+            <div className="grid-header"><h2>Mission Control</h2><button className="back-btn" onClick={() => setViewState('map')}>View Map Overlay</button></div>
+            <div className={`grid-matrix ${expandedWidget ? 'has-expanded' : ''}`}>
+              {['landcover', 'vegetation', 'uploads', 'panos', 'changeDetection', 'wildlifeStream'].map((type) => (
+                <div key={type} className={`grid-box ${expandedWidget === type ? 'expanded' : ''}`} onClick={() => setExpandedWidget(expandedWidget === type ? null : type)}>
+                  {renderWidgetContent(type)}
+                  {!loading[type] && modules[type] && (<div className="expand-hint">{expandedWidget === type ? 'Collapse' : 'Expand'}</div>)}
+                </div>
+              ))}
             </div>
           </div>
         )}
       </div>
 
-      {/* --- MODAL FOR GALLERY --- */}
       {showGalleryModal && (
         <div className="modal-overlay" onClick={() => setShowGalleryModal(false)}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Your Contribution Gallery</h3>
-              <button onClick={() => setShowGalleryModal(false)}>×</button>
-            </div>
+            <div className="modal-header"><h3>Your Contribution Gallery</h3><button onClick={() => setShowGalleryModal(false)}>×</button></div>
             <div className="full-gallery-grid">
-              {myUploads.map((up) => (
-                <div key={up.id} className="gallery-item large">
-                   <SecureImage imageId={up.id} alt={up.species} />
-                   <div className="img-caption">
-                      <span>{up.species || 'Unknown'}</span>
-                      <small>{new Date().toLocaleDateString()}</small>
-                   </div>
-                </div>
-              ))}
+              {myUploads.map((up) => (<div key={up.id} className="gallery-item large"><SecureImage imageId={up.id} alt={up.species} /><div className="img-caption"><span>{up.species || 'Unknown'}</span><small>{new Date().toLocaleDateString()}</small></div></div>))}
             </div>
           </div>
         </div>

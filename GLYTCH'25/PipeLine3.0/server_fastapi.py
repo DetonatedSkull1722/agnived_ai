@@ -2,10 +2,12 @@ import glob
 import os
 import json
 import traceback
+import base64  # <--- Added for image encoding
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
+from fastapi.staticfiles import StaticFiles
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -52,6 +54,20 @@ security = HTTPBearer()
 PLANT_MODEL_ID = "juppy44/plant-identification-2m-vit-b"
 plant_processor = AutoImageProcessor.from_pretrained(PLANT_MODEL_ID)
 plant_model = AutoModelForImageClassification.from_pretrained(PLANT_MODEL_ID)
+
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+def image_to_base64(image_path: str) -> Optional[str]:
+    """Reads an image file and converts it to a base64 string"""
+    if not image_path or not os.path.exists(image_path):
+        return None
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode('utf-8')
+    except Exception as e:
+        print(f"Error encoding image {image_path}: {e}")
+        return None
 
 # -----------------------------------------------------------------------------
 # Lifespan: Initialize DB on startup
@@ -361,7 +377,7 @@ async def get_image(image_id: str, current_user: dict = Depends(get_current_user
         cur.execute("SELECT image, content_type FROM uploads WHERE id = ?", (image_id,))
     else:
         cur.execute("SELECT image, content_type FROM uploads WHERE id = ? AND user_id = ?", 
-                   (image_id, current_user["user_id"]))
+                    (image_id, current_user["user_id"]))
     
     result = cur.fetchone()
     conn.close()
@@ -555,7 +571,20 @@ async def run_landcover(request: LandcoverRequest, current_user: dict = Depends(
             cloud_cover_max=request.cloud_cover_max,
         )
         outputs = run_landcover_pipeline(aoi_cfg, dl_cfg)
-        return {k: str(v) for k, v in outputs.items()}
+        
+        # --- FIX: Convert visual output to Base64 ---
+        viz_path = outputs.get('viz_path')
+        if not viz_path:
+             potential_path = results_dir / "agnived_cover_analysis.png"
+             if potential_path.exists():
+                 viz_path = str(potential_path)
+
+        b64_string = image_to_base64(str(viz_path))
+        
+        return {
+            **{k: str(v) for k, v in outputs.items()},
+            "image_base64": b64_string # Send Base64 data
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail={'error': str(e), 'trace': traceback.format_exc()})
 
@@ -566,8 +595,13 @@ async def run_vegetation(request: VegetationRequest, current_user: dict = Depend
         if not mask_path:
             parent_dir = Path(__file__).resolve().parent
             mask_path = str(parent_dir / "LandcoverResults" / "vegetation_mask.tif")
+        
         aoi_cfg = VegAOIConfig(lon=request.lon, lat=request.lat, buffer_km=request.buffer_km)
         res = run_bigearth_rdnet(aoi_cfg, veg_mask_path=Path(mask_path))
+        
+        # --- FIX: Convert visual output to Base64 ---
+        b64_string = image_to_base64(str(res.viz_path))
+
         result = {
             'aoi': vars(res.aoi) if hasattr(res.aoi, '__dict__') else str(res.aoi),
             'cube_path': str(res.cube_path),
@@ -575,6 +609,7 @@ async def run_vegetation(request: VegetationRequest, current_user: dict = Depend
             'class_distribution': res.class_distribution,
             'tile_counts': res.tile_counts,
             'avg_confidence': res.avg_confidence,
+            'image_base64': b64_string # Send Base64 data
         }
         return result
     except Exception as e:
@@ -594,9 +629,18 @@ async def run_landcover_and_vegetation(request: LandcoverVegetationRequest, curr
             cloud_cover_max=request.cloud_cover_max,
         )
         landcover_outputs = run_landcover_pipeline(aoi_cfg, dl_cfg)
+        
         mask_path = landcover_outputs.get('vegetation_mask')
         veg_aoi_cfg = VegAOIConfig(lon=request.lon, lat=request.lat, buffer_km=request.buffer_km)
         veg_res = run_bigearth_rdnet(veg_aoi_cfg, veg_mask_path=Path(mask_path))
+        
+        # Base64 Conversions
+        lc_viz = landcover_outputs.get('viz_path') or str(results_dir / "agnived_cover_analysis.png")
+        veg_viz = str(veg_res.viz_path)
+        
+        landcover_b64 = image_to_base64(lc_viz)
+        veg_b64 = image_to_base64(veg_viz)
+
         veg_result = {
             'aoi': vars(veg_res.aoi) if hasattr(veg_res.aoi, '__dict__') else str(veg_res.aoi),
             'cube_path': str(veg_res.cube_path),
@@ -604,9 +648,14 @@ async def run_landcover_and_vegetation(request: LandcoverVegetationRequest, curr
             'class_distribution': veg_res.class_distribution,
             'tile_counts': veg_res.tile_counts,
             'avg_confidence': veg_res.avg_confidence,
+            'image_base64': veg_b64
         }
+        
         return {
-            'landcover': {k: str(v) for k, v in landcover_outputs.items()},
+            'landcover': {
+                **{k: str(v) for k, v in landcover_outputs.items()},
+                'image_base64': landcover_b64
+            },
             'vegetation': veg_result
         }
     except Exception as e:
@@ -629,6 +678,7 @@ async def run_landcover_vegetation_and_panos(request: LandcoverVegetationPanosRe
         mask_path = landcover_outputs.get('vegetation_mask')
         veg_aoi_cfg = VegAOIConfig(lon=request.lon, lat=request.lat, buffer_km=request.buffer_km)
         veg_res = run_bigearth_rdnet(veg_aoi_cfg, veg_mask_path=Path(mask_path))
+        
         veg_result = {
             'aoi': vars(veg_res.aoi) if hasattr(veg_res.aoi, '__dict__') else str(veg_res.aoi),
             'cube_path': str(veg_res.cube_path),
