@@ -1,15 +1,33 @@
 import glob
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
-from pathlib import Path
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-import traceback
 import os
 import json
+import traceback
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form, status
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+
 from PIL import Image
 import torch
 from transformers import AutoImageProcessor, AutoModelForImageClassification
+
+# Import database utilities
+from database import (
+    init_db,
+    get_connection,
+    generate_uuid,
+    get_uploads_in_radius,
+    get_user_score,
+    get_user_uploads
+)
 
 # Import the landcover pipeline
 from landcover.LandCover import AOIConfig as LandcoverAOIConfig, DownloadConfig, run_landcover_pipeline
@@ -20,14 +38,76 @@ from vegetation.Vegetation_Classification_pipeline import AOIConfig as VegAOICon
 import GoogleVR4.core as core
 from GoogleVR4.ObjectIdentifier import run_object_detection
 
-app = FastAPI(title="AgniVed Pipeline API", version="1.0.0")
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 day
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
 
 # Plant model for classification
 PLANT_MODEL_ID = "juppy44/plant-identification-2m-vit-b"
 plant_processor = AutoImageProcessor.from_pretrained(PLANT_MODEL_ID)
 plant_model = AutoModelForImageClassification.from_pretrained(PLANT_MODEL_ID)
 
-# Pydantic models for request validation
+# -----------------------------------------------------------------------------
+# Lifespan: Initialize DB on startup
+# -----------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize database
+    init_db()
+    print("✅ Database initialized and ready")
+    yield
+    # Shutdown: cleanup if needed
+    pass
+
+app = FastAPI(
+    title="AgniVed Pipeline & Upload API",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------------------------------------------------------------------------
+# Pydantic Models
+# -----------------------------------------------------------------------------
+
+# Auth models
+class UserRegister(BaseModel):
+    userid: str
+    name: str
+    password: str
+    role: str = "user"
+
+class UserLogin(BaseModel):
+    userid: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    role: str
+    userid: str
+
+# Upload models
+class UploadSearchRequest(BaseModel):
+    latitude: float
+    longitude: float
+    radius_km: float = 10.0
+
+# Pipeline models (existing)
 class PanosRequest(BaseModel):
     lat: float
     lon: float
@@ -97,12 +177,209 @@ class LandcoverVegetationPanosRequest(BaseModel):
     panos_min_distance: float = 20.0
     panos_labels: List[str] = ["tree", "bushes"]
 
+# -----------------------------------------------------------------------------
+# Security & Auth Helpers
+# -----------------------------------------------------------------------------
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def decode_token(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    payload = decode_token(token)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    
+    user_id = payload.get("sub")
+    userid = payload.get("userid")
+    role = payload.get("role")
+    
+    if user_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    
+    return {"user_id": user_id, "userid": userid, "role": role}
+
+async def get_current_admin(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user
+
+# -----------------------------------------------------------------------------
+# Auth Endpoints
+# -----------------------------------------------------------------------------
+@app.post("/auth/register")
+async def register(user: UserRegister):
+    """Register a new user"""
+    if user.role not in ["user", "admin"]:
+        user.role = "user"
+    
+    password_hash = get_password_hash(user.password)
+    user_id = generate_uuid()
+    
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO users (id, userid, name, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            (user_id, user.userid, user.name, password_hash, user.role)
+        )
+        conn.commit()
+        conn.close()
+        return {"message": "Registration successful", "userid": user.userid}
+    except Exception as e:
+        if "UNIQUE constraint failed" in str(e):
+            raise HTTPException(status_code=400, detail="Username already exists")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/auth/login", response_model=Token)
+async def login(user: UserLogin):
+    """Login and get JWT token"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, password_hash, role FROM users WHERE userid = ?", (user.userid,))
+    db_user = cur.fetchone()
+    conn.close()
+    
+    if not db_user or not verify_password(user.password, db_user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    user_id = db_user["id"]
+    role = db_user["role"]
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user_id, "userid": user.userid, "role": role},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "role": role,
+        "userid": user.userid
+    }
+
+@app.get("/auth/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Get current user info"""
+    score = get_user_score(current_user["user_id"])
+    return {
+        "userid": current_user["userid"],
+        "role": current_user["role"],
+        "score": score
+    }
+
+# -----------------------------------------------------------------------------
+# Upload Endpoints
+# -----------------------------------------------------------------------------
+@app.post("/upload")
+async def upload_image(
+    image: UploadFile = File(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    species: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """Upload an image with geolocation"""
+    if not image.filename:
+        raise HTTPException(status_code=400, detail="No image selected")
+    
+    image_bytes = await image.read()
+    filename = image.filename
+    content_type = image.content_type
+    upload_id = generate_uuid()
+    user_id = current_user["user_id"]
+    
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO uploads (id, user_id, filename, content_type, image, latitude, longitude, species)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (upload_id, user_id, filename, content_type, image_bytes, latitude, longitude, species)
+    )
+    conn.commit()
+    conn.close()
+    
+    return {
+        "message": "Upload successful",
+        "id": upload_id,
+        "filename": filename,
+        "latitude": latitude,
+        "longitude": longitude,
+        "species": species
+    }
+
+@app.get("/uploads/me")
+async def get_my_uploads(current_user: dict = Depends(get_current_user), limit: Optional[int] = None):
+    """Get all uploads by current user"""
+    uploads = get_user_uploads(current_user["user_id"], limit)
+    return {"uploads": uploads}
+
+@app.post("/uploads/search")
+async def search_uploads(req: UploadSearchRequest, current_user: dict = Depends(get_current_user)):
+    """Search uploads within a radius"""
+    uploads = get_uploads_in_radius(req.latitude, req.longitude, req.radius_km, current_user["user_id"])
+    return {
+        "uploads": uploads,
+        "count": len(uploads),
+        "search_params": {
+            "latitude": req.latitude,
+            "longitude": req.longitude,
+            "radius_km": req.radius_km
+        }
+    }
+
+@app.get("/image/{image_id}")
+async def get_image(image_id: str, current_user: dict = Depends(get_current_user)):
+    """Get an uploaded image by ID"""
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    # Users can only see their own images, admins can see all
+    if current_user["role"] == "admin":
+        cur.execute("SELECT image, content_type FROM uploads WHERE id = ?", (image_id,))
+    else:
+        cur.execute("SELECT image, content_type FROM uploads WHERE id = ? AND user_id = ?", 
+                   (image_id, current_user["user_id"]))
+    
+    result = cur.fetchone()
+    conn.close()
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    return StreamingResponse(iter([result["image"]]), media_type=result["content_type"])
+
+# -----------------------------------------------------------------------------
+# Pipeline Endpoints (unchanged from original, but now protected)
+# -----------------------------------------------------------------------------
 @app.get("/")
 async def root():
     return {"message": "AgniVed Pipeline API - Use /docs for API documentation"}
 
 @app.post('/panos')
-async def panos_api(request: PanosRequest):
+async def panos_api(request: PanosRequest, current_user: dict = Depends(get_current_user)):
     result = core.find_panos_and_views(
         lat=request.lat,
         lon=request.lon,
@@ -110,7 +387,6 @@ async def panos_api(request: PanosRequest):
         radius_m=request.area_of_interest,
         min_distance_m=request.min_distance
     )
-    # Save result to out/panos_result.json
     out_dir = os.path.join(os.path.dirname(__file__), 'out')
     os.makedirs(out_dir, exist_ok=True)
     result_path = os.path.join(out_dir, 'panos_result.json')
@@ -119,13 +395,12 @@ async def panos_api(request: PanosRequest):
     return result
 
 @app.post('/detect_objects')
-async def detect_objects_api(request: DetectObjectsRequest):
+async def detect_objects_api(request: DetectObjectsRequest, current_user: dict = Depends(get_current_user)):
     result = run_object_detection(request.image_path, request.labels)
     return result
 
 @app.post('/panos_detect_objects')
-async def panos_detect_objects_api(request: PanosDetectObjectsRequest):
-    # Step 1: Run panos search
+async def panos_detect_objects_api(request: PanosDetectObjectsRequest, current_user: dict = Depends(get_current_user)):
     pano_result = core.find_panos_and_views(
         lat=request.lat,
         lon=request.lon,
@@ -133,14 +408,12 @@ async def panos_detect_objects_api(request: PanosDetectObjectsRequest):
         radius_m=request.area_of_interest,
         min_distance_m=request.min_distance
     )
-    # Save pano result JSON
     out_dir = os.path.join(os.path.dirname(__file__), 'out')
     os.makedirs(out_dir, exist_ok=True)
     result_path = os.path.join(out_dir, 'panos_detect_objects_result.json')
     with open(result_path, 'w', encoding='utf-8') as f:
         json.dump(pano_result, f, indent=2)
 
-    # Step 2: For each pano image, run object detection
     detected_objects = []
     for img in pano_result.get('images', []):
         if img.get('pano_downloaded'):
@@ -165,7 +438,6 @@ async def panos_detect_objects_api(request: PanosDetectObjectsRequest):
                 'object_detection': 'Pano not downloaded.'
             })
 
-    # Step 3: Return combined result
     combined_result = {
         'pano_result': pano_result,
         'detected_objects': detected_objects
@@ -173,7 +445,7 @@ async def panos_detect_objects_api(request: PanosDetectObjectsRequest):
     return combined_result
 
 @app.post('/classify_plant')
-async def classify_plant_api(request: ClassifyPlantRequest):
+async def classify_plant_api(request: ClassifyPlantRequest, current_user: dict = Depends(get_current_user)):
     if not request.image_path or not os.path.exists(request.image_path):
         raise HTTPException(status_code=400, detail="image_path not provided or file does not exist")
     try:
@@ -192,8 +464,7 @@ async def classify_plant_api(request: ClassifyPlantRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post('/panos_detect_and_classify')
-async def panos_detect_and_classify_api(request: PanosDetectAndClassifyRequest):
-    # Step 1: Run panos search and object detection
+async def panos_detect_and_classify_api(request: PanosDetectAndClassifyRequest, current_user: dict = Depends(get_current_user)):
     pano_result = core.find_panos_and_views(
         lat=request.lat,
         lon=request.lon,
@@ -219,7 +490,6 @@ async def panos_detect_and_classify_api(request: PanosDetectAndClassifyRequest):
                     'object_detection': detect_result
                 })
 
-                # Step 2: For each detected crop, classify plant
                 crop_dir = os.path.join(os.path.dirname(pano_path), '..', 'detected_crops')
                 crop_dir = os.path.abspath(crop_dir)
                 crop_images = glob.glob(os.path.join(crop_dir, '*.jpg'))
@@ -272,7 +542,7 @@ async def panos_detect_and_classify_api(request: PanosDetectAndClassifyRequest):
     return combined_result
 
 @app.post('/run_landcover')
-async def run_landcover(request: LandcoverRequest):
+async def run_landcover(request: LandcoverRequest, current_user: dict = Depends(get_current_user)):
     try:
         parent_dir = Path(__file__).resolve().parent
         results_dir = parent_dir / "LandcoverResults"
@@ -290,7 +560,7 @@ async def run_landcover(request: LandcoverRequest):
         raise HTTPException(status_code=500, detail={'error': str(e), 'trace': traceback.format_exc()})
 
 @app.post('/run_vegetation')
-async def run_vegetation(request: VegetationRequest):
+async def run_vegetation(request: VegetationRequest, current_user: dict = Depends(get_current_user)):
     try:
         mask_path = request.mask_path
         if not mask_path:
@@ -311,11 +581,10 @@ async def run_vegetation(request: VegetationRequest):
         raise HTTPException(status_code=500, detail={'error': str(e), 'trace': traceback.format_exc()})
 
 @app.post('/run_landcover_and_vegetation')
-async def run_landcover_and_vegetation(request: LandcoverVegetationRequest):
+async def run_landcover_and_vegetation(request: LandcoverVegetationRequest, current_user: dict = Depends(get_current_user)):
     try:
         parent_dir = Path(__file__).resolve().parent
         results_dir = parent_dir / "LandcoverResults"
-        # Landcover pipeline
         aoi_cfg = LandcoverAOIConfig(lon=request.lon, lat=request.lat, buffer_km=request.buffer_km)
         dl_cfg = DownloadConfig(
             output_dir=results_dir,
@@ -325,7 +594,6 @@ async def run_landcover_and_vegetation(request: LandcoverVegetationRequest):
             cloud_cover_max=request.cloud_cover_max,
         )
         landcover_outputs = run_landcover_pipeline(aoi_cfg, dl_cfg)
-        # Vegetation pipeline (use mask from landcover output)
         mask_path = landcover_outputs.get('vegetation_mask')
         veg_aoi_cfg = VegAOIConfig(lon=request.lon, lat=request.lat, buffer_km=request.buffer_km)
         veg_res = run_bigearth_rdnet(veg_aoi_cfg, veg_mask_path=Path(mask_path))
@@ -345,9 +613,8 @@ async def run_landcover_and_vegetation(request: LandcoverVegetationRequest):
         raise HTTPException(status_code=500, detail={'error': str(e), 'trace': traceback.format_exc()})
 
 @app.post('/run_landcover_vegetation_and_panos')
-async def run_landcover_vegetation_and_panos(request: LandcoverVegetationPanosRequest):
+async def run_landcover_vegetation_and_panos(request: LandcoverVegetationPanosRequest, current_user: dict = Depends(get_current_user)):
     try:
-        # Landcover/vegetation: area_of_interest > 3km
         parent_dir = Path(__file__).resolve().parent
         results_dir = parent_dir / "LandcoverResults"
         aoi_cfg = LandcoverAOIConfig(lon=request.lon, lat=request.lat, buffer_km=request.buffer_km)
@@ -370,7 +637,6 @@ async def run_landcover_vegetation_and_panos(request: LandcoverVegetationPanosRe
             'tile_counts': veg_res.tile_counts,
             'avg_confidence': veg_res.avg_confidence,
         }
-        # Panos detect & classify: area_of_interest < 150m
         panos_lat = request.panos_lat if request.panos_lat is not None else request.lat
         panos_lon = request.panos_lon if request.panos_lon is not None else request.lon
         pano_result = core.find_panos_and_views(
@@ -443,7 +709,6 @@ async def run_landcover_vegetation_and_panos(request: LandcoverVegetationPanosRe
             'vegetation': veg_result,
             'panos': panos_combined_result
         }
-        # Save result to out/landcover_vegetation_and_panos_result.json
         out_dir = os.path.join(os.path.dirname(__file__), 'out')
         os.makedirs(out_dir, exist_ok=True)
         result_path = os.path.join(out_dir, 'landcover_vegetation_and_panos_result.json')
@@ -453,6 +718,9 @@ async def run_landcover_vegetation_and_panos(request: LandcoverVegetationPanosRe
     except Exception as e:
         raise HTTPException(status_code=500, detail={'error': str(e), 'trace': traceback.format_exc()})
 
+# -----------------------------------------------------------------------------
+# Run
+# -----------------------------------------------------------------------------
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='0.0.0.0', port=5000)
+    uvicorn.run("server_fastapi:app", host='0.0.0.0', port=5000, reload=True)
