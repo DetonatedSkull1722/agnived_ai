@@ -4,7 +4,6 @@ import '../styles/Login.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
-// 1. Data Pool: 20 Ecological Facts
 const ECO_FACTS = [
   "The Amazon Rainforest produces 20% of the world's oxygen.",
   "One hectare of mangrove forest absorbs more carbon than one hectare of tropical rainforest.",
