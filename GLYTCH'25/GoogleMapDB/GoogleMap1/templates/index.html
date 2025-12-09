@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Location Marker App (No API Key)</title>
+
+  <!-- ✅ Leaflet CSS & JS (FREE) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      height: 100vh;
+      font-family: Arial;
+    }
+
+    .sidebar {
+      width: 300px;
+      padding: 15px;
+      background: #f4f4f4;
+    }
+
+    #map {
+      flex: 1;
+    }
+
+    input, textarea, button {
+      width: 100%;
+      margin-top: 10px;
+      padding: 6px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ✅ FORM -->
+<div class="sidebar">
+  <h2>Add Location</h2>
+
+  <form method="POST">
+    <input type="number" step="any" id="lat" name="lat" placeholder="Latitude" required>
+    <input type="number" step="any" id="lng" name="lng" placeholder="Longitude" required>
+    <textarea name="description" placeholder="Description" required></textarea>
+    <button type="submit">Save Location</button>
+  </form>
+</div>
+
+<!-- ✅ MAP -->
+<div id="map"></div>
+
+<script>
+  // ✅ Use tojson to generate VALID JS
+  const savedLocations = {{ locations | tojson | safe }};
+
+  // ✅ Create map
+  const map = L.map('map').setView([20.5937, 78.9629], 5);
+
+  // ✅ OpenStreetMap tiles
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  // ✅ Add saved markers
+  savedLocations.forEach(loc => {
+    const lat = loc[0];
+    const lng = loc[1];
+    const desc = loc[2];
+
+    L.marker([lat, lng])
+      .addTo(map)
+      .bindPopup(`<b>${desc}</b><br>${lat}, ${lng}`);
+  });
+
+  // ✅ Zoom to typed lat/lng
+  const latInput = document.getElementById("lat");
+  const lngInput = document.getElementById("lng");
+
+  let previewMarker = null;
+
+  function zoomToTypedLocation() {
+    const lat = parseFloat(latInput.value);
+    const lng = parseFloat(lngInput.value);
+
+    if (isNaN(lat) || isNaN(lng)) return;
+
+    // zoom into that location
+    map.setView([lat, lng], 15);
+
+    // optional preview marker that moves as you type
+    if (previewMarker) {
+      previewMarker.setLatLng([lat, lng]);
+    } else {
+      previewMarker = L.marker([lat, lng]).addTo(map);
+    }
+  }
+
+  latInput.addEventListener("input", zoomToTypedLocation);
+  lngInput.addEventListener("input", zoomToTypedLocation);
+</script>
+

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Location Marker App (With Labels)</title>
+
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      height: 100vh;
+      font-family: Arial, sans-serif;
+    }
+
+    .sidebar {
+      width: 320px;
+      padding: 15px;
+      background: #f7f7f7;
+      box-sizing: border-box;
+      border-right: 1px solid #ddd;
+      overflow-y: auto;
+    }
+
+    #map {
+      flex: 1;
+    }
+
+    input, textarea, button {
+      width: 100%;
+      margin-top: 8px;
+      padding: 6px;
+      box-sizing: border-box;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    fieldset {
+      margin-top: 10px;
+      border: 1px solid #ccc;
+      padding: 8px;
+    }
+
+    fieldset legend {
+      font-size: 13px;
+      font-weight: bold;
+    }
+
+    .label-option {
+      display: flex;
+      align-items: center;
+      margin-top: 4px;
+      font-size: 14px;
+    }
+
+    .color-box {
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
+      margin-right: 6px;
+      border: 1px solid #ccc;
+    }
+
+    .location-list {
+      margin-top: 16px;
+      font-size: 13px;
+    }
+
+    .location-item {
+      padding: 6px 0;
+      border-bottom: 1px solid #eee;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      margin-right: 4px;
+      margin-top: 2px;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+
+<div class="sidebar">
+  <a href="{{ url_for('search') }}" class="nav-link">Go to Radius Search →</a>
+  <h2>Add Location</h2>
+
+  <form method="POST">
+    <input type="number" step="any" id="lat" name="lat" placeholder="Latitude" required>
+    <input type="number" step="any" id="lng" name="lng" placeholder="Longitude" required>
+
+    <textarea name="description" placeholder="Description" rows="3" required></textarea>
+
+    <!-- LABEL CHECKBOXES -->
+    <fieldset>
+      <legend>Labels</legend>
+
+      <!-- Define some fixed labels -->
+      <label class="label-option">
+        <span class="color-box" style="background: #e53935;"></span>
+        <input type="checkbox" name="labels" value="home">
+        &nbsp;Home
+      </label>
+
+      <label class="label-option">
+        <span class="color-box" style="background: #1e88e5;"></span>
+        <input type="checkbox" name="labels" value="work">
+        &nbsp;Work
+      </label>
+
+      <label class="label-option">
+        <span class="color-box" style="background: #43a047;"></span>
+        <input type="checkbox" name="labels" value="food">
+        &nbsp;Food
+      </label>
+
+      <label class="label-option">
+        <span class="color-box" style="background: #8e24aa;"></span>
+        <input type="checkbox" name="labels" value="travel">
+        &nbsp;Travel
+      </label>
+
+      <label class="label-option">
+        <span class="color-box" style="background: #fb8c00;"></span>
+        <input type="checkbox" name="labels" value="other">
+        &nbsp;Other
+      </label>
+    </fieldset>
+
+    <button type="submit">Save Location</button>
+  </form>
+
+  <!-- Saved locations list -->
+  <div class="location-list">
+    <h3>Saved Locations</h3>
+    {% if locations %}
+      {% for lat, lng, desc, labels_str in locations %}
+        <div class="location-item">
+          <strong>{{ desc }}</strong><br>
+          <small>{{ lat }}, {{ lng }}</small><br>
+          {% if labels_str %}
+            {% for label in labels_str.split(",") %}
+              {% set color =
+                "e53935" if label == "home" else
+                "1e88e5" if label == "work" else
+                "43a047" if label == "food" else
+                "8e24aa" if label == "travel" else
+                "fb8c00" if label == "other" else
+                "757575"
+              %}
+              <span class="badge" style="background:#{{ color }};">
+                {{ label }}
+              </span>
+            {% endfor %}
+          {% endif %}
+        </div>
+      {% endfor %}
+    {% else %}
+      <p>No locations saved yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div id="map"></div>
+
+<script>
+  // Locations from Flask: [[lat, lng, desc, labels_str], ...]
+  const savedLocations = {{ locations | tojson | safe }};
+
+  // Label -> color mapping (same as in sidebar)
+  const labelColors = {
+    home:   "#e53935",
+    work:   "#1e88e5",
+    food:   "#43a047",
+    travel: "#8e24aa",
+    other:  "#fb8c00"
+  };
+
+  // Create map
+  const map = L.map('map').setView([20.5937, 78.9629], 5);
+
+  // OpenStreetMap tiles (free)
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  // Add saved markers with colored circles
+  savedLocations.forEach(loc => {
+    const lat = loc[0];
+    const lng = loc[1];
+    const desc = loc[2];
+    const labelsStr = loc[3] || "";
+    const labels = labelsStr ? labelsStr.split(",") : [];
+
+    // Choose primary color based on first label
+    let color = "#757575"; // default gray
+    if (labels.length > 0) {
+      const primary = labels[0];
+      if (labelColors[primary]) {
+        color = labelColors[primary];
+      }
+    }
+
+    const marker = L.circleMarker([lat, lng], {
+      radius: 8,
+      color: color,
+      fillColor: color,
+      fillOpacity: 0.9
+    }).addTo(map);
+
+    const labelsHtml = labels
+      .map(label => {
+        const c = labelColors[label] || "#757575";
+        return `<span style="
+          display:inline-block;
+          padding:2px 4px;
+          margin:1px;
+          border-radius:3px;
+          background:${c};
+          color:#fff;
+          font-size:10px;
+        ">${label}</span>`;
+      })
+      .join(" ");
+
+    marker.bindPopup(`
+      <div>
+        <strong>${desc}</strong><br>
+        <small>${lat}, ${lng}</small><br>
+        ${labelsHtml}
+      </div>
+    `);
+  });
+
+  // Zoom to typed lat/lng + preview marker
+  const latInput = document.getElementById("lat");
+  const lngInput = document.getElementById("lng");
+
+  let previewMarker = null;
+
+  function zoomToTypedLocation() {
+    const lat = parseFloat(latInput.value);
+    const lng = parseFloat(lngInput.value);
+
+    if (isNaN(lat) || isNaN(lng)) return;
+
+    map.setView([lat, lng], 15);
+
+    if (previewMarker) {
+      previewMarker.setLatLng([lat, lng]);
+    } else {
+      previewMarker = L.circleMarker([lat, lng], {
+        radius: 8,
+        color: "#000000",
+        fillColor: "#000000",
+        fillOpacity: 0.7
+      }).addTo(map);
+    }
+  }
+
+  latInput.addEventListener("input", zoomToTypedLocation);
+  lngInput.addEventListener("input", zoomToTypedLocation);
+</script>
+
+</body>
+</html>

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Search Checkpoints by Radius</title>
+
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      height: 100vh;
+      font-family: Arial, sans-serif;
+    }
+
+    .sidebar {
+      width: 320px;
+      padding: 15px;
+      background: #f7f7f7;
+      box-sizing: border-box;
+      border-right: 1px solid #ddd;
+      overflow-y: auto;
+    }
+
+    #map {
+      flex: 1;
+    }
+
+    input, button {
+      width: 100%;
+      margin-top: 8px;
+      padding: 6px;
+      box-sizing: border-box;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    a.nav-link {
+      display: inline-block;
+      margin-bottom: 10px;
+      font-size: 13px;
+      text-decoration: none;
+      color: #1e88e5;
+    }
+
+    .result-item {
+      border-bottom: 1px solid #eee;
+      padding: 6px 0;
+      font-size: 13px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      margin-right: 4px;
+      margin-top: 2px;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+
+<div class="sidebar">
+  <a href="{{ url_for('index') }}" class="nav-link">← Back to Add Locations</a>
+  <h2>Search Checkpoints</h2>
+
+  <form method="POST">
+    <input type="number" step="any" name="lat" placeholder="Center latitude"
+           value="{{ query_lat if query_lat is not none else '' }}" required>
+    <input type="number" step="any" name="lng" placeholder="Center longitude"
+           value="{{ query_lng if query_lng is not none else '' }}" required>
+    <input type="number" step="any" name="radius_km" placeholder="Radius (km)"
+           value="{{ radius_km if radius_km is not none else '' }}" required>
+
+    <button type="submit">Search</button>
+  </form>
+
+  <h3 style="margin-top:16px;">Results</h3>
+  {% if matches and matches|length > 0 %}
+    <p>{{ matches|length }} checkpoints found inside {{ radius_km }} km.</p>
+    {% for m in matches %}
+      <div class="result-item">
+        <strong>{{ m.description }}</strong><br>
+        <small>{{ m.lat }}, {{ m.lng }}</small><br>
+        <small>Distance: {{ m.distance_km }} km</small><br>
+        {% if m.labels %}
+          {% for label in m.labels.split(",") %}
+            {% set color =
+              "e53935" if label == "home" else
+              "1e88e5" if label == "work" else
+              "43a047" if label == "food" else
+              "8e24aa" if label == "travel" else
+              "fb8c00" if label == "other" else
+              "757575"
+            %}
+            <span class="badge" style="background:#{{ color }};">
+              {{ label }}
+            </span>
+          {% endfor %}
+        {% endif %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <p>No checkpoints found (or no search yet).</p>
+  {% endif %}
+</div>
+
+<div id="map"></div>
+
+<script>
+  // Label colors: keep consistent with index.html
+  const labelColors = {
+    home:   "#e53935",
+    work:   "#1e88e5",
+    food:   "#43a047",
+    travel: "#8e24aa",
+    other:  "#fb8c00"
+  };
+
+  // Data from Flask
+  const matches = {{ matches | tojson | safe }};
+  const queryLat = {{ query_lat if query_lat is not none else 'null' }};
+  const queryLng = {{ query_lng if query_lng is not none else 'null' }};
+  const radiusKm = {{ radius_km if radius_km is not none else 'null' }};
+
+  // Init map (center on India or query center if available)
+  let startCenter = [20.5937, 78.9629];
+  let startZoom = 5;
+
+  if (queryLat !== null && queryLng !== null) {
+    startCenter = [queryLat, queryLng];
+    startZoom = 8;
+  }
+
+  const map = L.map('map').setView(startCenter, startZoom);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  // If we have a query center and radius, draw the search circle
+  if (queryLat !== null && queryLng !== null && radiusKm !== null) {
+    const radiusMeters = radiusKm * 1000.0;
+
+    const circle = L.circle([queryLat, queryLng], {
+      radius: radiusMeters,
+      color: "#000",
+      fillColor: "#000",
+      fillOpacity: 0.05,
+      weight: 1
+    }).addTo(map);
+
+    // Ensure circle + points are visible
+    map.fitBounds(circle.getBounds());
+  }
+
+  // Add markers for matches
+  matches.forEach(m => {
+    const lat = m.lat;
+    const lng = m.lng;
+    const desc = m.description;
+    const labelsStr = m.labels || "";
+    const labels = labelsStr ? labelsStr.split(",") : [];
+    const distanceKm = m.distance_km;
+
+    let color = "#757575";
+    if (labels.length > 0 && labelColors[labels[0]]) {
+      color = labelColors[labels[0]];
+    }
+
+    const marker = L.circleMarker([lat, lng], {
+      radius: 8,
+      color: color,
+      fillColor: color,
+      fillOpacity: 0.9
+    }).addTo(map);
+
+    const labelsHtml = labels
+      .map(label => {
+        const c = labelColors[label] || "#757575";
+        return `<span style="
+          display:inline-block;
+          padding:2px 4px;
+          margin:1px;
+          border-radius:3px;
+          background:${c};
+          color:#fff;
+          font-size:10px;
+        ">${label}</span>`;
+      })
+      .join(" ");
+
+    marker.bindPopup(`
+      <div>
+        <strong>${desc}</strong><br>
+        <small>${lat}, ${lng}</small><br>
+        <small>Distance: ${distanceKm} km</small><br>
+        ${labelsHtml}
+      </div>
+    `);
+  });
+</script>
+
+</body>
+</html>
