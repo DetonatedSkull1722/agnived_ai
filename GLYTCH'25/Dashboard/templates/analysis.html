@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Analysis - Mapillary Map + Viewer</title>
+
+    <!-- MapLibre GL -->
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.css" />
+    <script src="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.js"></script>
+
+    <!-- Mapillary JS -->
+    <link rel="stylesheet" href="https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.css" />
+    <script src="https://unpkg.com/mapillary-js@4.1.2/dist/mapillary.js"></script>
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: Arial, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .main-container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
+            color: white;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }
+
+        .header h1 { font-size: 22px; }
+
+        .header-nav { display: flex; gap: 15px; align-items: center; }
+
+        .user-info { display: flex; gap: 15px; align-items: center; }
+
+        .role-badge {
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .role-admin { background-color: #dc3545; color: white; }
+        .role-user  { background-color: #28a745; color: white; }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s;
+        }
+
+        .btn-light     { background-color: white;   color: #007bff; }
+        .btn-light:hover { background-color: #f0f0f0; }
+        .btn-primary   { background-color: #007bff; color: white; }
+        .btn-primary:hover { background-color: #0056b3; }
+        .btn-danger    { background-color: #dc3545; color: white; }
+        .btn-danger:hover { background-color: #c82333; }
+        .btn-secondary { background-color: #6c757d; color: white; }
+        .btn-secondary:hover { background-color: #545b62; }
+
+        /* Dashboard - Left Side (30%) */
+        .dashboard {
+            width: 30%;
+            background: #f8f9fa;
+            padding: 20px;
+            overflow-y: auto;
+            margin-top: 70px;
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .dashboard h2 {
+            color: #333;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #007bff;
+            font-size: 18px;
+        }
+
+        .form-group { margin-bottom: 15px; }
+        .form-group label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #333;
+            font-size: 14px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 8px 10px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+            font-size: 14px;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+        }
+
+        .search-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .tips {
+            margin-top: 25px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #555;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+        }
+
+        .tips h3 {
+            font-size: 14px;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        .tips ul { padding-left: 18px; }
+        .tips li { margin-bottom: 6px; }
+
+        /* Map - Right Side (70%) */
+        .map-container {
+            width: 70%;
+            position: relative;
+            margin-top: 70px;
+        }
+
+        #map {
+            width: 100%;
+            height: calc(100vh - 70px);
+        }
+
+        .map-info {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: white;
+            padding: 10px 14px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            font-size: 12px;
+            z-index: 500;
+        }
+
+        .map-info h3 {
+            font-size: 13px;
+            margin-bottom: 6px;
+        }
+
+        /* Viewer at bottom (like screenshot) */
+        #viewer-wrapper {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 520px;
+            height: 300px;
+            max-width: 90%;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            display: flex;
+            flex-direction: column;
+            z-index: 600;
+        }
+
+        #viewer-header {
+            background: rgba(0,0,0,0.85);
+            color: #fff;
+            padding: 6px 10px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        #viewer-toggle {
+            border: none;
+            background: #007bff;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+
+        #viewer-toggle:hover { background:#0056b3; }
+
+        #viewer {
+            flex: 1;
+            min-height: 0;
+        }
+
+        /* Legend for markers */
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            right: 15px;
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            font-size: 11px;
+            z-index: 500;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 4px 0;
+        }
+
+        .legend-marker {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+
+        .marker-mapillary { background:#00ff00; }
+        .marker-selected  { background:#ff0000; }
+        .marker-upload    { background:#007bff; }
+
+        @media (max-width: 900px) {
+            .main-container { flex-direction: column; }
+            .dashboard { width: 100%; height: 40vh; margin-top: 70px; }
+            .map-container { width: 100%; height: 60vh; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <h1>📍 Upload Analysis & Mapillary Viewer</h1>
+        <div class="header-nav">
+            <a href="/" class="btn btn-light">Back to Uploads</a>
+            <div class="user-info">
+                <span>{{ session.username }}</span>
+                <span class="role-badge role-{{ session.role }}">{{ session.role }}</span>
+                {% if session.role == 'admin' %}
+                <a href="/admin/dashboard" class="btn btn-danger">Admin</a>
+                {% endif %}
+                <a href="/logout" class="btn btn-secondary">Logout</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Dashboard -->
+        <div class="dashboard">
+            <h2>Map Dashboard</h2>
+
+            <div class="form-group">
+                <label for="lat">Latitude</label>
+                <input id="lat" type="number" step="any" placeholder="e.g., 12.0136">
+            </div>
+
+            <div class="form-group">
+                <label for="lon">Longitude</label>
+                <input id="lon" type="number" step="any" placeholder="e.g., 78.0867">
+            </div>
+
+            <div class="form-group">
+                <label for="radius">Radius (km, optional)</label>
+                <input id="radius" type="number" step="0.1" placeholder="e.g., 2">
+            </div>
+
+            <div class="search-actions">
+                <button class="btn btn-primary" onclick="gotoLocation()">Go to location</button>
+                <button class="btn btn-secondary" onclick="useMyLocation()">Use my location</button>
+            </div>
+
+            <div class="tips">
+                <h3>Tips</h3>
+                <ul>
+                    <li>Click a <b>green</b> dot to open its Mapillary photo.</li>
+                    <li>The clicked point is highlighted in <b>red</b>.</li>
+                    <li>Your uploads appear as <b>blue</b> markers.</li>
+                    <li>Use the form above to jump to any lat / lon.</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Map + viewer -->
+        <div class="map-container">
+            <div id="map"></div>
+
+            <div class="map-info">
+                <h3>Map Information</h3>
+                <div id="uploadCount">Loading uploads…</div>
+            </div>
+
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-marker marker-mapillary"></div><span>Mapillary image</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-marker marker-selected"></div><span>Selected image</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-marker marker-upload"></div><span>Your uploads</span>
+                </div>
+            </div>
+
+            <div id="viewer-wrapper">
+                <div id="viewer-header">
+                    <span>Street-level view (click a green dot on the map)</span>
+                    <button id="viewer-toggle" onclick="toggleViewer()">Hide</button>
+                </div>
+                <div id="viewer"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const MAPILLARY_TOKEN = "{{ mapillary_token }}";
+        const START_LAT = {{ start_lat }};
+        const START_LNG = {{ start_lng }};
+
+        let map;
+        let viewer;
+        let allUploads = [];
+        let uploadMarkers = [];
+        let selectedImageId = null;
+
+        function initViewer() {
+            const Viewer = mapillary.Viewer;
+            viewer = new Viewer({
+                container: "viewer",
+                accessToken: MAPILLARY_TOKEN
+            });
+        }
+
+        function initMap() {
+            map = new maplibregl.Map({
+                container: "map",
+                center: [START_LNG, START_LAT],
+                zoom: 16,
+                style: {
+                    version: 8,
+                    sources: {
+                        "osm-tiles": {
+                            type: "raster",
+                            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+                            tileSize: 256,
+                            attribution: "© OpenStreetMap contributors"
+                        }
+                    },
+                    layers: [{
+                        id: "osm-tiles",
+                        type: "raster",
+                        source: "osm-tiles",
+                        minzoom: 0,
+                        maxzoom: 19
+                    }]
+                }
+            });
+
+            map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+            map.on("load", () => {
+                // Mapillary vector source
+                map.addSource("mapillary", {
+                    type: "vector",
+                    tiles: [
+                        "https://tiles.mapillary.com/maps/vtp/mly1_public/2/{z}/{x}/{y}?access_token=" + MAPILLARY_TOKEN
+                    ],
+                    minzoom: 6,
+                    maxzoom: 14
+                });
+
+                // Sequences
+                map.addLayer({
+                    id: "mapillary-sequences",
+                    type: "line",
+                    source: "mapillary",
+                    "source-layer": "sequence",
+                    paint: {
+                        "line-color": "#00bb88",
+                        "line-width": 2
+                    }
+                });
+
+                // Image points
+                map.addLayer({
+                    id: "mapillary-images",
+                    type: "circle",
+                    source: "mapillary",
+                    "source-layer": "image",
+                    paint: {
+                        "circle-radius": 3,
+                        "circle-color": "#00ff00",
+                        "circle-stroke-width": 1,
+                        "circle-stroke-color": "#004400"
+                    }
+                });
+
+                // Selected image highlight
+                map.addLayer({
+                    id: "mapillary-images-selected",
+                    type: "circle",
+                    source: "mapillary",
+                    "source-layer": "image",
+                    paint: {
+                        "circle-radius": 6,
+                        "circle-color": "#ff0000",
+                        "circle-stroke-width": 2,
+                        "circle-stroke-color": "#ffffff"
+                    },
+                    filter: ["==", ["get", "id"], ""]
+                });
+
+                // Pointer cursor on hover
+                map.on("mouseenter", "mapillary-images", () => {
+                    map.getCanvas().style.cursor = "pointer";
+                });
+                map.on("mouseleave", "mapillary-images", () => {
+                    map.getCanvas().style.cursor = "";
+                });
+
+                // Click: center + highlight + open in viewer
+                map.on("click", "mapillary-images", (e) => {
+                    if (!e.features || !e.features.length) return;
+                    const f = e.features[0];
+                    const imageId = f.properties.id || f.properties.image_id || f.properties.key;
+                    const coords = f.geometry.coordinates;
+
+                    selectedImageId = imageId;
+
+                    map.easeTo({
+                        center: coords,
+                        zoom: Math.max(map.getZoom(), 17),
+                        duration: 800
+                    });
+
+                    const filter = [
+                        "any",
+                        ["==", ["get", "id"], imageId],
+                        ["==", ["get", "image_id"], imageId],
+                        ["==", ["get", "key"], imageId]
+                    ];
+                    map.setFilter("mapillary-images-selected", filter);
+
+                    if (viewer) {
+                        viewer.moveTo(imageId).catch(err => console.error("viewer.moveTo failed:", err));
+                    }
+                });
+
+                // After map ready, load uploads
+                loadUploads();
+            });
+        }
+
+        // Load your uploads and show as blue markers
+        function loadUploads() {
+            const info = document.getElementById("uploadCount");
+            info.textContent = "Loading uploads…";
+
+            fetch("/api/uploads/all")
+                .then(r => r.json())
+                .then(data => {
+                    allUploads = data.uploads || [];
+                    info.textContent = `Total uploads: ${allUploads.length}`;
+                    showUploadMarkers(allUploads);
+                })
+                .catch(err => {
+                    console.error("Error loading uploads:", err);
+                    info.textContent = "Error loading uploads";
+                });
+        }
+
+        function showUploadMarkers(list) {
+            uploadMarkers.forEach(m => m.remove());
+            uploadMarkers = [];
+
+            if (!list || !list.length) return;
+
+            const bounds = new maplibregl.LngLatBounds();
+
+            list.forEach(upload => {
+                const el = document.createElement("div");
+                el.style.width = "18px";
+                el.style.height = "18px";
+                el.style.borderRadius = "50%";
+                el.style.backgroundColor = "#007bff";
+                el.style.border = "2px solid white";
+                el.style.boxShadow = "0 0 4px rgba(0,0,0,0.5)";
+                el.style.cursor = "pointer";
+
+                const marker = new maplibregl.Marker({ element: el })
+                    .setLngLat([upload.longitude, upload.latitude])
+                    .setPopup(
+                        new maplibregl.Popup({ offset: 20 }).setHTML(`
+                            <div style="min-width:200px;">
+                                <img src="/image/${upload.id}" 
+                                     style="width:100%;height:130px;object-fit:cover;border-radius:5px;margin-bottom:6px;" />
+                                <div style="font-weight:bold;margin-bottom:4px;">${upload.filename}</div>
+                                <div style="font-size:11px;color:#666;">
+                                    📅 ${new Date(upload.created_at).toLocaleDateString()}<br>
+                                    📍 ${upload.latitude.toFixed(6)}, ${upload.longitude.toFixed(6)}
+                                </div>
+                            </div>
+                        `)
+                    )
+                    .addTo(map);
+
+                marker.getElement().addEventListener("click", () => {
+                    map.easeTo({
+                        center: [upload.longitude, upload.latitude],
+                        zoom: 18,
+                        duration: 800
+                    });
+                });
+
+                uploadMarkers.push(marker);
+                bounds.extend([upload.longitude, upload.latitude]);
+            });
+
+            if (!bounds.isEmpty()) {
+                map.fitBounds(bounds, { padding: 60 });
+            }
+        }
+
+        // Go to location from dashboard
+        function gotoLocation() {
+            const lat = parseFloat(document.getElementById("lat").value);
+            const lon = parseFloat(document.getElementById("lon").value);
+            const radius = parseFloat(document.getElementById("radius").value);
+
+            if (isNaN(lat) || isNaN(lon)) {
+                alert("Please enter a valid latitude and longitude.");
+                return;
+            }
+
+            const target = [lon, lat];
+            map.easeTo({
+                center: target,
+                zoom: 18,
+                duration: 800
+            });
+
+            // If radius given, zoom to a bounding box roughly covering that radius
+            if (!isNaN(radius) && radius > 0) {
+                const circle = createCircle(target, radius);
+                const bounds = new maplibregl.LngLatBounds();
+                circle.forEach(c => bounds.extend(c));
+                map.fitBounds(bounds, { padding: 60 });
+            }
+        }
+
+        // Simple circle approximation for bounds (km)
+        function createCircle(center, radiusInKm, points = 64) {
+            const coords = [];
+            const [lng, lat] = center;
+            const distanceX = radiusInKm / (111.320 * Math.cos(lat * Math.PI / 180));
+            const distanceY = radiusInKm / 110.574;
+
+            for (let i = 0; i < points; i++) {
+                const theta = (i / points) * (2 * Math.PI);
+                const x = distanceX * Math.cos(theta);
+                const y = distanceY * Math.sin(theta);
+                coords.push([lng + x, lat + y]);
+            }
+            coords.push(coords[0]);
+            return coords;
+        }
+
+        // Use browser geolocation
+        function useMyLocation() {
+            if (!navigator.geolocation) {
+                alert("Geolocation is not supported by your browser.");
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                pos => {
+                    const lat = pos.coords.latitude;
+                    const lon = pos.coords.longitude;
+                    document.getElementById("lat").value = lat.toFixed(6);
+                    document.getElementById("lon").value = lon.toFixed(6);
+
+                    map.easeTo({
+                        center: [lon, lat],
+                        zoom: 17,
+                        duration: 800
+                    });
+                },
+                () => alert("Unable to fetch your location.")
+            );
+        }
+
+        // Show / hide viewer
+        let viewerVisible = true;
+        function toggleViewer() {
+            const wrap = document.getElementById("viewer-wrapper");
+            const btn = document.getElementById("viewer-toggle");
+            if (viewerVisible) {
+                wrap.style.display = "none";
+                btn.textContent = "Show";
+                viewerVisible = false;
+            } else {
+                wrap.style.display = "flex";
+                btn.textContent = "Hide";
+                viewerVisible = true;
+            }
+        }
+
+        // Init on load
+        window.addEventListener("DOMContentLoaded", () => {
+            initViewer();
+            initMap();
+        });
+    </script>
+</body>
+</html>
