@@ -357,8 +357,9 @@ async def get_my_uploads(current_user: dict = Depends(get_current_user), limit: 
 
 @app.post("/uploads/search")
 async def search_uploads(req: UploadSearchRequest, current_user: dict = Depends(get_current_user)):
-    """Search uploads within a radius"""
-    uploads = get_uploads_in_radius(req.latitude, req.longitude, req.radius_km, current_user["user_id"])
+    """Search uploads within a radius (Community Search)"""
+    # Pass None as user_id to search globally, not just for the current user
+    uploads = get_uploads_in_radius(req.latitude, req.longitude, req.radius_km, None) 
     return {
         "uploads": uploads,
         "count": len(uploads),
@@ -375,12 +376,8 @@ async def get_image(image_id: str, current_user: dict = Depends(get_current_user
     conn = get_connection()
     cur = conn.cursor()
     
-    # Users can only see their own images, admins can see all
-    if current_user["role"] == "admin":
-        cur.execute("SELECT image, content_type FROM uploads WHERE id = ?", (image_id,))
-    else:
-        cur.execute("SELECT image, content_type FROM uploads WHERE id = ? AND user_id = ?", 
-                    (image_id, current_user["user_id"]))
+    # Allow any authenticated user to view the image (removed 'AND user_id = ?')
+    cur.execute("SELECT image, content_type FROM uploads WHERE id = ?", (image_id,))
     
     result = cur.fetchone()
     conn.close()
@@ -389,7 +386,6 @@ async def get_image(image_id: str, current_user: dict = Depends(get_current_user
         raise HTTPException(status_code=404, detail="Image not found")
     
     return StreamingResponse(iter([result["image"]]), media_type=result["content_type"])
-
 # -----------------------------------------------------------------------------
 # Pipeline Endpoints (unchanged from original, but now protected)
 # -----------------------------------------------------------------------------

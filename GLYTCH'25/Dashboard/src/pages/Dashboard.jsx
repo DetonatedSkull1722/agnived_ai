@@ -409,17 +409,35 @@ export default function Dashboard() {
       case 'uploads':
         return (
           <div className="widget-content">
-            <h4>Nearby Fauna</h4>
-            <div className="mini-gallery">
-              {data.slice(0, 4).map((img, i) => (
-                <div key={i} className="mini-thumb">
-                  <SecureImage imageId={img.id} alt={img.species} />
+            <h4>Community Sightings</h4>
+            <div className="collage-container">
+              {data.length > 0 ? (
+                <div className="collage-grid">
+                  {/* Show max 9 images in preview, or all if expanded */}
+                  {data.slice(0, expandedWidget === 'uploads' ? 50 : 9).map((img, i) => (
+                    <div key={i} className="collage-item">
+                      <SecureImage imageId={img.id} alt={img.species} />
+                      <div className="species-hover-overlay">
+                        <span className="species-name">{img.species || 'Unknown Species'}</span>
+                        <span className="upload-date">{new Date(img.created_at).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-              {data.length === 0 && <p className="data-text">No sightings in range.</p>}
+              ) : (
+                <div className="no-data-placeholder">
+                  <span style={{fontSize: '2rem'}}>🔭</span>
+                  <p>No community sightings in this radius ({radius}km).</p>
+                </div>
+              )}
             </div>
+            {/* Show count overlay if not expanded */}
+            {data.length > 9 && expandedWidget !== 'uploads' && (
+              <div className="more-count">+{data.length - 9} more</div>
+            )}
           </div>
         );
+        
       case 'panos':
         return (
           <div className="widget-content panos-widget">
